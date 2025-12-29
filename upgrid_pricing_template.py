@@ -3736,9 +3736,7 @@ def main():
     format_excel_output(out_path)
 
     print_header("PIPELINE COMPLETE")
-
     print(f"✅ Output saved to {out_path}")
-    # print(f"✅ Formatted output saved to {out_path_highlighted}")
 
     # Print summary of scenarios processed
 
