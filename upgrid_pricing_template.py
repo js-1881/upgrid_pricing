@@ -239,17 +239,13 @@ TURBINE_HARDCODED_MAP = {
 
 def check_memory_usage() -> float:
     """Return current memory usage in MB"""
-
     process = psutil.Process(os.getpid())
-
     memory_info = process.memory_info()
-
     return memory_info.rss / 1024**2
 
 
 def ram_check():
     """Print current memory usage"""
-
     print(f"Memory usage: {check_memory_usage():.2f} MB")
 
 
@@ -257,13 +253,9 @@ def convert_date_or_keep_string(date: Any) -> str:
     """Convert date to string format or keep original if conversion fails"""
 
     try:
-
         date_obj = pd.to_datetime(date, dayfirst=True, errors="raise")
-
         return date_obj.strftime("%Y-%m-%d")
-
     except (ValueError, TypeError):
-
         return str(date)
 
 
@@ -271,13 +263,9 @@ def is_number(val: Any) -> bool:
     """Check if value can be converted to float"""
 
     try:
-
         float(val)
-
         return True
-
     except (ValueError, TypeError):
-
         return False
 
 
