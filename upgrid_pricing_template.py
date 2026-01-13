@@ -773,14 +773,11 @@ def prepare_turbine_matching_dataframe(
     )
 
     # Prepare reference data with power ratings (rated_power is in kW)
-
     name_to_power = {}
-
     if "rated_power" in df_ref.columns:
         name_to_power = df_ref.set_index("name")["rated_power"].to_dict()
 
     # Prepare hardcoded map keys for fuzzy matching
-
     hardcoded_keys = list(TURBINE_HARDCODED_MAP.keys())
 
     # Multi-stage fuzzy matching with power-aware scoring
@@ -861,7 +858,6 @@ def prepare_turbine_matching_dataframe(
                 return best_match
 
         # Stage 4: Fuzzy match against hardcoded map keys (fallback)
-
         if isinstance(row["add_turbine"], str) and row["add_turbine"].strip():
 
             # Try constructed name
@@ -1191,33 +1187,25 @@ class AnemosAPI:
 
 def process_time_column(df: pd.DataFrame) -> pd.DataFrame:
     """
-
     Process time column - handle both time_berlin and time_utc
-
     """
 
     df_result = df.copy()
 
     if "time_berlin" in df_result.columns:
-
         df_result["time_berlin"] = pd.to_datetime(
             df_result["time_berlin"], dayfirst=True, errors="coerce"
         )
-
         df_result["time_berlin"] = df_result["time_berlin"].dt.tz_localize(None)
-
         print("🥯 Processed time_berlin column")
 
     elif "time_utc" in df_result.columns:
-
         df_result["time_utc"] = pd.to_datetime(
             df_result["time_utc"], errors="coerce", dayfirst=True, utc=True
         )
-
         df_result["time_berlin"] = (
             df_result["time_utc"].dt.tz_convert(BERLIN_TZ).dt.tz_localize(None)
         )
-
         df_result = df_result.drop(columns="time_utc")
         print("🥯🥯 Converted time_utc to time_berlin")
 
@@ -1535,6 +1523,7 @@ def process_blindleister_market_prices(
             2021: "weighted_2021_eur_mwh_blindleister",
             2023: "weighted_2023_eur_mwh_blindleister",
             2024: "weighted_2024_eur_mwh_blindleister",
+            2025: "weighted_2025_eur_mwh_blindleister",
         }
     )
 
@@ -1544,6 +1533,7 @@ def process_blindleister_market_prices(
         "weighted_2021_eur_mwh_blindleister",
         "weighted_2023_eur_mwh_blindleister",
         "weighted_2024_eur_mwh_blindleister",
+        "weighted_2025_eur_mwh_blindleister",
         "average_weighted_eur_mwh_blindleister",
     ]
 
@@ -1561,7 +1551,7 @@ def process_blindleister_market_prices(
 
 
 def process_enervis_results(
-    dfs: List[pd.DataFrame], target_years: List[str] = ["2021", "2023", "2024"]
+    dfs: List[pd.DataFrame], target_years: List[str] = ["2021", "2023", "2024","2025"]
 ) -> pd.DataFrame:
     """
 
@@ -1573,7 +1563,7 @@ def process_enervis_results(
         target_years: Years to include in pivot
     Returns:
 
-        DataFrame with columns: id, 2021, 2023, 2024, avg_enervis
+        DataFrame with columns: id, 2021, 2023, 2024, 2025, avg_enervis
 
     """
 
@@ -1670,6 +1660,7 @@ def aggregate_stammdaten_by_malo(df: pd.DataFrame) -> pd.DataFrame:
         "weighted_2021_eur_mwh_blindleister",
         "weighted_2023_eur_mwh_blindleister",
         "weighted_2024_eur_mwh_blindleister",
+        "weighted_2025_eur_mwh_blindleister",
         "average_weighted_eur_mwh_blindleister",
     ]
 
@@ -2404,9 +2395,7 @@ def run_curtailment_forecast_multi_category(
     df_ts = df_ts.copy()
 
     if "category" not in df_ts.columns:
-
         if "tech" in df_ts.columns and "EEG" in df_ts.columns:
-
             df_ts["category"] = np.where(
                 (df_ts["tech"] == "PV") & (df_ts["EEG"] == "no rules"),
                 "PV_no_rules",
@@ -2499,10 +2488,12 @@ def generate_output_sheets(
         "weighted_2021_eur_mwh_blindleister",
         "weighted_2023_eur_mwh_blindleister",
         "weighted_2024_eur_mwh_blindleister",
+        "weighted_2025_eur_mwh_blindleister",
         "average_weighted_eur_mwh_blindleister",
         "2021",
         "2023",
         "2024",
+        "2025",
         "avg_enervis",
         "weighted_delta_permalo",
         "forecast_weighted_delta_permalo" if has_forecast else None,
@@ -2676,7 +2667,7 @@ def main():
         blindleister = BlindleisterAPI(BLINDLEISTER_EMAIL, BLINDLEISTER_PASSWORD)
 
         df_blindleister_market_prices_raw = blindleister.get_market_prices(
-            see_unit_ids, [2021, 2023, 2024]
+            see_unit_ids, [2021, 2023, 2024, 2025]
         )
 
         if not df_blindleister_market_prices_raw.empty:
@@ -2760,17 +2751,13 @@ def main():
                 if not df_matched_turbines_for_enervis.empty:
 
                     # Call Enervis API
-
                     anemos = AnemosAPI(ANEMOS_EMAIL, ANEMOS_PASSWORD)
-
                     product_id = anemos.get_historical_product_id()
 
                     # Build parkinfo
-
                     parkinfo = []
 
                     for _, row in df_matched_turbines_for_enervis.iterrows():
-
                         parkinfo.append(
                             {
                                 "id": int(row["malo"]),
@@ -2784,15 +2771,11 @@ def main():
                     job_uuid = anemos.start_job(product_id, parkinfo)
 
                     if job_uuid:
-
                         job_info = anemos.wait_for_job(job_uuid)
-
                         dfs = anemos.extract_results(job_info)
-
                         df_enervis_mv_by_malo = process_enervis_results(dfs)
 
             # Aggregate SEE data by malo
-
             df_assets_see_agg_by_malo = aggregate_stammdaten_by_malo(
                 df_assets_with_blindleister
             )
@@ -2800,7 +2783,6 @@ def main():
             # Merge with Enervis if available
 
             if df_enervis_mv_by_malo is not None and not df_enervis_mv_by_malo.empty:
-
                 df_enervis_mv_by_malo["id"] = df_enervis_mv_by_malo["id"].astype(str)
 
                 df_assets_see_enriched = pd.merge(
@@ -2980,7 +2962,7 @@ def main():
 
                     df_assets_nonsee_enervis_enriched = (
                         df_assets_nonsee_enervis_enriched.dropna(
-                            subset=["2021", "2023", "2024", "avg_enervis"]
+                            subset=["2021", "2023", "2024", "2025", "avg_enervis"]
                         )
                     )
 
@@ -3008,7 +2990,7 @@ def main():
         df_assets_enriched = pd.merge(
             df_assets_see_enriched,
             df_assets_nonsee_enervis_enriched[
-                ["malo", "2021", "2023", "2024", "avg_enervis"]
+                ["malo", "2021", "2023", "2024", "2025", "avg_enervis"]
             ],
             on="malo",
             how="left",
@@ -3017,7 +2999,7 @@ def main():
 
         # Fill missing values
 
-        for col in ["2021", "2023", "2024", "avg_enervis"]:
+        for col in ["2021", "2023", "2024", "2025", "avg_enervis"]:
 
             df_assets_enriched[col] = df_assets_enriched[col + "_see"].fillna(
                 df_assets_enriched[col + "_no_see"]
@@ -3141,27 +3123,38 @@ def main():
     gc.collect()
 
     df_production_raw.columns = df_production_raw.columns.str.strip()
-
     df_production_raw["malo"] = df_production_raw["malo"].astype(str).str.strip()
 
     # Process time column
-
     df_production_raw = process_time_column(df_production_raw)
 
     # Filter by completeness
-
     df_production_filtered = filter_production_data_by_completeness(df_production_raw)
 
     if df_production_filtered.empty:
-
         print("❌ No valid production data after filtering")
-
         return
 
+    def custom_power_mwh(group):
+        if group.nunique() == 1:
+            return group.mean()
+        else:
+            return group.sum()
+
+    grouped = df_production_filtered.groupby(
+        ["malo", "time_berlin", "available_years", "available_months"]
+    )
+
+    del df_production_filtered
+    gc.collect()
+
+    df_production_filtered = grouped["power_kwh"].apply(custom_power_mwh).reset_index()
+
+    del grouped
+    gc.collect()
     # Rename power column
 
     df_production_filtered.rename(columns={"power_kwh": "infeed_kwh"}, inplace=True)
-
     df_production_filtered["__adj_kwh"] = 0.0
 
     # Load curtailment/redispatch if available
@@ -3173,11 +3166,8 @@ def main():
     wb.close()
 
     if "redispatch" in available_sheets:
-
         df_redispatch = pd.read_excel(path, sheet_name="redispatch", engine="openpyxl")
-
         df_redispatch.columns = df_redispatch.columns.str.strip()
-
         df_redispatch["malo"] = df_redispatch["malo"].astype(str).str.strip()
 
         df_redispatch = process_time_column(df_redispatch)
@@ -3259,15 +3249,7 @@ def main():
         ["malo", "time_berlin", "available_years", "available_months"]
     )
 
-    def custom_power_mwh(group):
 
-        if group.nunique() == 1:
-
-            return group.mean()
-
-        else:
-
-            return group.sum()
 
     df_production_qh_agg = grouped["power_kwh"].apply(custom_power_mwh).reset_index()
 
@@ -3298,13 +3280,11 @@ def main():
     )
 
     # Merge with day-ahead prices
-
     df_prod_with_dayahead = pd.merge(
         df_production_qh_agg, df_dayahead_prices_qh, on="time_berlin", how="inner"
     )
 
     # Add year/month
-
     df_prod_with_dayahead["year"] = df_prod_with_dayahead["time_berlin"].dt.year.astype(
         "int16"
     )
@@ -3439,9 +3419,7 @@ def main():
     )
 
     df_out_process = None
-
     forecast_curt_weighted_delta_permalo = None
-
     forecast_curt_year_agg = None
 
     if has_recent_data:
