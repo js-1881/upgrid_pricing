@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Valentine's Day</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      text-align: center;
+      background: url('https://tenor.com/view/heartbeat-tom-and-jerry-nervous-gif-16692924.gif') no-repeat center center fixed; /* Replace 'background.jpg' */
+      background-size: cover;
+      color: white;
+      padding: 20px;
+    }
+    h1 {
+      font-size: 3rem;
+      text-shadow: 2px 2px 4px #000000;
+      animation: fadeIn 2s ease-in-out; /* Animation */
+    }
+    button {
+      font-size: 20px;
+      padding: 10px 20px;
+      margin: 10px;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: transform 0.3s;
+    }
+    button:hover {
+      transform: scale(1.1);
+    }
+    .yes {
+      background-color: #4CAF50;
+      color: white;
+    }
+    .no {
+      background-color: #f44336;
+      color: white;
+    }
+    .message {
+      margin-top: 20px;
+      font-size: 18px;
+      text-shadow: 1px 1px 2px #000000;
+      animation: bounce 1s infinite alternate; /* Bouncing animation for messages */
+    }
+    .image-container {
+      margin-top: 20px;
+      display: none; /* Initially hidden */
+    }
+    .image-container img {
+      max-width: 100%;
+      height: auto;
+      border: 5px solid #ff5c8d;
+      border-radius: 10px;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+    }
+    /* Keyframes for animations */
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+      }
+      to {
+        opacity: 1;
+      }
+    }
+
+    @keyframes bounce {
+      from {
+        transform: translateY(0);
+      }
+      to {
+        transform: translateY(-10px);
+      }
+    }
+  </style>
+
+
+</head>
+<body>
+  <h1>Will you be my Valentine, JEANNNNN? 💖</h1>
+  <button class="yes" onclick="yesClick()">Yes</button>
+  <button class="no" onclick="noClick()">No</button>
+  <div class="message" id="message"></div>
+  <div class="image-container" id="image-container">
+    <img src="https://tenor.com/view/kiss-attack-love-gif-1735309413121501213.gif" alt="Valentine GIF"> <!-- Replace with your image name -->
+  </div>
+
+  <script>
+    let noClickCount = 0; // Track how many times "No" is clicked
+
+    function yesClick() {
+      // Show the image and a success message
+      document.getElementById("message").textContent = "YEYEYYE! ❤️❤️❤️ I knew it!";
+      document.getElementById("image-container").style.display = "block";
+    }
+
+    function noClick() {
+      // Show a "Think again" message
+      document.getElementById("message").textContent = "Pleaseeeee think again... 🥺";
+
+      // Make the "Yes" button grow larger
+      noClickCount++; // Increase the count
+      const yesButton = document.querySelector(".yes");
+      yesButton.style.transform = `scale(${1 + noClickCount * 0.2})`; // Increase size gradually
+    }
+  </script>
+</body>
+</html>
