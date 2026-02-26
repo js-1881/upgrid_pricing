@@ -1,3 +1,4 @@
+from typing import Any, Dict, List, Optional, Tuple
 from dotenv import load_dotenv
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -36,42 +37,71 @@ import re
 import gc
 import os
 import warnings
-warnings.filterwarnings("ignore")
 
 # =============================================================================
-
 # CONFIGURATION
+# =============================================================================
 
+load_dotenv(r"C:\Users\JerrySetiawan\OneDrive - CFP FlexPower\Work\Data pricing\.env")
+
+# Get the directory where this script is located
+SCRIPT_DIR = Path(__file__).parent.resolve()
+
+# API Credentials
+BLINDLEISTER_EMAIL = os.getenv("BLINDLEISTER_EMAIL", "").strip()
+BLINDLEISTER_PASSWORD = os.getenv("BLINDLEISTER_PASSWORD", "").strip()
+BLINDLEISTER_HARDCODED_TOKEN = os.getenv("BLINDLEISTER_HARDCODED_TOKEN", "").strip()
+ANEMOS_EMAIL = os.getenv("ANEMOS_EMAIL", "").strip()
+ANEMOS_PASSWORD = os.getenv("ANEMOS_PASSWORD", "").strip()
+
+# File Paths (relative to script location)
+TURBINE_REFERENCE_PATH = r"C:\Users\JerrySetiawan\OneDrive - CFP FlexPower\Work\Data pricing\Enervis template\turbine_types_id_enervis_eraseMW.xlsx"
+STAMMDATEN_PATH = SCRIPT_DIR / "UKA_0226_stammdaten.xlsx"
+OUTPUT_FOLDER = SCRIPT_DIR / "combined_results"
+
+# Processing Parameters
+BATCH_SIZE = 500
+TARGET_YEARS = [2021, 2023, 2024, 2025]
+
+# =============================================================================
+# PRODUCTION / PRICING CONFIGURATION (Step 5+)
 # =============================================================================
 
 PROJECT_ID = "flex-power"
-BERLIN_TZ = pytz.timezone("Europe/Berlin")
 
-# API credentials (should be in environment variables in production)
-load_dotenv(r"C:\Users\JerrySetiawan\OneDrive - CFP FlexPower\Work\Data pricing\.env")
 
-BLINDLEISTER_EMAIL = os.getenv("BLINDLEISTER_EMAIL", "")
-BLINDLEISTER_PASSWORD = os.getenv("BLINDLEISTER_PASSWORD", "")
-ANEMOS_EMAIL = os.getenv("ANEMOS_EMAIL", "")
-ANEMOS_PASSWORD = os.getenv("ANEMOS_PASSWORD", "")
+BERLIN_TZ = None
+if pytz is not None:
+    BERLIN_TZ = pytz.timezone(os.getenv("BERLIN_TZ", "Europe/Berlin"))
 
-TURBINE_REFERENCE_PATH = r"C:\Users\JerrySetiawan\OneDrive - CFP FlexPower\Work\Data pricing\Enervis template\turbine_types_id_enervis_eraseMW.xlsx"
-DAY_AHEAD_PRICE_PATH = r"C:\Users\JerrySetiawan\OneDrive - CFP FlexPower\Work\Data pricing\DA price\DA_price.csv"
-RMV_PRICE_PATH = r"C:\Users\JerrySetiawan\OneDrive - CFP FlexPower\Work\Data pricing\DA price\rmv_price.csv"
-MODEL_BASE_PATH = r"C:\Users\JerrySetiawan\OneDrive - CFP FlexPower\Work\curtailment_prediction\curtailment_model"
+DAY_AHEAD_PRICE_PATH = os.getenv("DAY_AHEAD_PRICE_PATH", "").strip()
+RMV_PRICE_PATH = os.getenv("RMV_PRICE_PATH", "").strip()
+MODEL_BASE_PATH = os.getenv("MODEL_BASE_PATH", "").strip()
 
-# Constants
-ROWS_PER_FULL_YEAR = 35000
-CUTOFF_DATE_HOURLY = "2025-10-01"
-EXCEL_MAX_ROWS = 1000000
+ENABLE_FORECASTING = os.getenv("ENABLE_FORECASTING", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+
+CURTAILMENT_FORECAST_TABLE = os.getenv(
+    "CURTAILMENT_FORECAST_TABLE",
+    "flex-power.sales.price_volume_data_for_curtailment_forecast_table",
+).strip()
+
+ROWS_PER_FULL_YEAR = int(os.getenv("ROWS_PER_FULL_YEAR", "35000"))
+CUTOFF_DATE_HOURLY = os.getenv("CUTOFF_DATE_HOURLY", "2025-10-01")
+EXCEL_MAX_ROWS = int(os.getenv("EXCEL_MAX_ROWS", "1000000"))
 
 # =============================================================================
-
-# HARDCODED TURBINE MAPPINGS
-
+# HARDCODED TURBINE MAPPINGS (for Enervis)
 # =============================================================================
 
 TURBINE_HARDCODED_MAP = {
+    "SG170-7.0 MW": "SG 7.0-170",
+    "N 149-4.5 MW": "N-149/4500",
+    "Nordex N 149-4.5 MW": "N-149/4500",
     "V90 MK8 Gridstreamer": "V-90 2.0MW Gridstreamer",
     "V126-3.45MW": "V-126 3.45MW",
     "V-90": "V-90 2.0MW Gridstreamer",
@@ -230,100 +260,1240 @@ TURBINE_HARDCODED_MAP = {
     "E160-5.56": "E-160 EP5 E3 5.56MW",
     "E138-4.2": "E-138 EP3 4.2MW",
 }
-# =============================================================================
-
-# UTILITY FUNCTIONS
 
 # =============================================================================
-
-
-def check_memory_usage() -> float:
-    """Return current memory usage in MB"""
-    process = psutil.Process(os.getpid())
-    memory_info = process.memory_info()
-    return memory_info.rss / 1024**2
-
-
-def ram_check():
-    """Print current memory usage"""
-    print(f"Memory usage: {check_memory_usage():.2f} MB")
-
-
-def convert_date_or_keep_string(date: Any) -> str:
-    """Convert date to string format or keep original if conversion fails"""
-
-    try:
-        date_obj = pd.to_datetime(date, dayfirst=True, errors="raise")
-        return date_obj.strftime("%Y-%m-%d")
-    except (ValueError, TypeError):
-        return str(date)
-
-
-def is_number(val: Any) -> bool:
-    """Check if value can be converted to float"""
-
-    try:
-        float(val)
-        return True
-    except (ValueError, TypeError):
-        return False
-
-
-def ensure_and_reorder(df: pd.DataFrame, order: List[str]) -> pd.DataFrame:
-    """Ensure columns exist in DataFrame and reorder them"""
-
-    missing_cols = [col for col in order if col and col not in df.columns]
-    for col in missing_cols:
-        df[col] = None
-    valid_order = [col for col in order if col]
-    return df[valid_order]
-
-
-def print_header(title: str):
-    """Print formatted section header"""
-    print("\n" + "=" * 80)
-    print(title)
-    print("=" * 80)
-
-
-# =============================================================================
-
-# DATA LOADING & VALIDATION
-
+# BLINDLEISTER API CLIENT
 # =============================================================================
 
 
-def load_bigquery_fixings(project_id: str) -> pd.DataFrame:
-    """Load fixing prices from BigQuery"""
+class BlindleisterAPI:
+    """Client for Blindleister API - Using working authentication from ori_old_upgrid.py"""
 
-    query = """
+    BASE_URL = "https://api.blindleister.de"
 
-    SELECT *
+    def __init__(
+        self, email: str, password: str, hardcoded_token: Optional[str] = None
+    ):
+        self.email = email
+        self.password = password
+        self.token = None
+        self.hardcoded_token = hardcoded_token  # Use hardcoded token for API calls
 
-    FROM `flex-power.sales.origination_fixings`
+        # DEBUG: Print initialization parameters
+        # print("\n" + "="*80)
+        # print("BLINDLEISTER API INITIALIZATION")
+        # print("="*80)
+        # print(f"Base URL: {self.BASE_URL}")
+        # print(f"Email: {self.email}")
+        # print(f"Password: {'*' * len(self.password) if self.password else 'NOT SET'}")
+        # print(f"Hardcoded Token Provided: {bool(self.hardcoded_token)}")
+        # if self.hardcoded_token:
+        #     print(f"Hardcoded Token (first 20 chars): {self.hardcoded_token[:20]}...")
+        #     print(f"Hardcoded Token (last 20 chars): ...{self.hardcoded_token[-20:]}")
+        # print("="*80 + "\n")
 
-    """
+    def get_token(self) -> str:
+        """Get access token from Blindleister API"""
+        headers = {
+            "accept": "text/plain",
+            "Content-Type": "application/json",
+        }
 
-    df = pandas_gbq.read_gbq(query, project_id=project_id)
+        json_data = {
+            "email": self.email,
+            "password": self.password,
+        }
 
-    df["Tenor"] = df["Tenor"].astype(str)
+        # DEBUG: Print token fetch details
+        print("\n" + "=" * 80)
+        print("BLINDLEISTER TOKEN FETCH")
+        print("=" * 80)
+        print(f"URL: {self.BASE_URL}/api/v1/authentication/get-access-token")
+        print(f"Headers: {headers}")
+        print(f"Payload: {{email: {self.email}, password: ***}}")
+        print("=" * 80)
 
-    print(f"✅ Loaded {len(df)} fixing records from BigQuery")
+        response = requests.post(
+            f"{self.BASE_URL}/api/v1/authentication/get-access-token",
+            headers=headers,
+            json=json_data,
+        )
+
+        # DEBUG: Print token response
+        # print(f"\nResponse Status: {response.status_code}")
+        # print(f"Response Headers: {dict(response.headers)}")
+        # print(f"Response Text (raw): {response.text}")
+        # print(f"Response Text (stripped): {response.text.strip('\"')}")
+
+        if response.status_code != 200:
+            raise Exception(
+                f"Failed to get Blindleister token: {response.status_code} - {response.text}"
+            )
+
+        self.token = response.text.strip('"')
+        # print(f"\n✅ Blindleister token obtained")
+        # print(f"Token (first 20 chars): {self.token[:20]}...")
+        # print(f"Token (last 20 chars): ...{self.token[-20:]}")
+        # print(f"Token length: {len(self.token)}")
+        # print("="*80 + "\n")
+        return self.token
+
+    def get_market_prices(self, site_ids: List[str], years: List[int]) -> pd.DataFrame:
+        """Fetch market prices for multiple sites and years
+
+        Strategy:
+        1. If hardcoded token is provided, try it first
+        2. If hardcoded token fails (401), fetch fresh token and retry
+        3. If no hardcoded token, use fresh token from the start
+        """
+        # Determine which token to use initially
+        if self.hardcoded_token:
+            auth_token = self.hardcoded_token
+            token_source = "hardcoded"
+            # print("🔑 Using hardcoded authorization token")
+        else:
+            # No hardcoded token, fetch fresh one
+            if not self.token:
+                self.get_token()
+            auth_token = self.token
+            token_source = "fresh"
+            print("🔄 Using freshly fetched authorization token")
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {auth_token}",
+        }
+
+        # DEBUG: Print initial request configuration
+        # print("\n" + "="*80)
+        # print("BLINDLEISTER MARKET PRICE FETCH")
+        # print("="*80)
+        # print(f"Token source: {token_source}")
+        # print(f"Auth token (first 20 chars): {auth_token[:20]}...")
+        # print(f"Auth token (last 20 chars): ...{auth_token[-20:]}")
+        # print(f"Auth token length: {len(auth_token)}")
+        # print(f"Headers: {headers}")
+        # print(f"Number of site IDs: {len(site_ids)}")
+        # print(f"Site IDs: {site_ids[:5]}..." if len(site_ids) > 5 else f"Site IDs: {site_ids}")
+        # print(f"Years: {years}")
+        # print("="*80 + "\n")
+
+        records = []
+        token_refreshed = False
+
+        # Loop through each ID and fetch data for each year (matching ori_old_upgrid.py)
+        for idx, site_id in enumerate(site_ids):
+            print(f"[{idx+1}/{len(site_ids)}] Processing: {site_id}")
+
+            for year in years:
+                payload = {"ids": [site_id], "year": year}
+
+                # DEBUG: Print request details for first site only
+                if idx == 0:
+                    print(f"\n  --- Request Details (Year {year}) ---")
+                    print(
+                        f"  URL: {self.BASE_URL}/api/v1/market-price-atlas-api/get-market-price"
+                    )
+                    print(f"  Headers: {headers}")
+                    print(f"  Payload: {payload}")
+                    print(f"  --- End Request Details ---\n")
+
+                response = requests.post(
+                    f"{self.BASE_URL}/api/v1/market-price-atlas-api/get-market-price",
+                    headers=headers,
+                    json=payload,
+                )
+
+                # DEBUG: Print response for first site
+                if idx == 0:
+                    print(f"  Response Status: {response.status_code}")
+                    print(f"  Response Headers: {dict(response.headers)}")
+                    print(
+                        f"  Response Text: {response.text[:500]}..."
+                        if len(response.text) > 500
+                        else f"  Response Text: {response.text}"
+                    )
+
+                # If token fails with 401 and we haven't refreshed yet, get fresh token and retry
+                if response.status_code == 401 and not token_refreshed:
+                    if token_source == "hardcoded":
+                        print("\n⚠️ Hardcoded token returned 401 (Invalid token)")
+                    print("🔄 Fetching fresh token via login...")
+                    auth_token = self.get_token()
+                    headers["Authorization"] = f"Bearer {auth_token}"
+                    token_source = "fresh"
+                    token_refreshed = True
+                    print(f"✅ Retrying request with fresh token...")
+
+                    # Retry the request with new token
+                    response = requests.post(
+                        f"{self.BASE_URL}/api/v1/market-price-atlas-api/get-market-price",
+                        headers=headers,
+                        json=payload,
+                    )
+                    print(f"  Retry Response Status: {response.status_code}")
+                    print(
+                        f"  Retry Response Text: {response.text[:200]}..."
+                        if len(response.text) > 200
+                        else f"  Retry Response Text: {response.text}"
+                    )
+
+                if response.status_code != 200:
+                    print(
+                        f"  Year {year}: Failed ({response.status_code}) - {response.text}"
+                    )
+                    continue
+
+                try:
+                    result = response.json()
+                    for entry in result:
+                        entry["year"] = year
+                        records.append(entry)
+                    if idx == 0:
+                        print(f"  Year {year}: ✅ Success - {len(result)} entries")
+                except Exception as e:
+                    print(f"  Year {year}: Error parsing response - {e}")
+                    continue
+
+        if not records:
+            print("❌ No Blindleister records fetched")
+            return pd.DataFrame()
+
+        # Flatten JSON structure
+        df_flat = pd.json_normalize(
+            records,
+            record_path="months",
+            meta=[
+                "year",
+                "unit_mastr_id",
+                "gross_power_kw",
+                "energy_source",
+                "annual_generated_energy_mwh",
+                "benchmark_market_price_eur_mwh",
+            ],
+            errors="ignore",
+        )
+
+        print(f"✅ Fetched {len(df_flat)} Blindleister market price records")
+        return df_flat
+
+    def get_generator_details(
+        self, site_ids: List[str], year: int = 2025
+    ) -> pd.DataFrame:
+        """Fetch generator/asset details (MaStR) for SEE ids.
+
+        Mirrors the behavior in `ori_old_upgrid.py`:
+        - POST to `/api/v1/mastr-api/get-generator-details`
+        - payload: {"ids": [SEE...], "year": <year>}
+        - Uses hardcoded Bearer token if provided, otherwise freshly fetched token
+        """
+        if not site_ids:
+            return pd.DataFrame()
+
+        # Determine which token to use initially
+        if self.hardcoded_token:
+            auth_token = self.hardcoded_token
+            token_source = "hardcoded"
+            # print("🔑 Using hardcoded authorization token (generator-details)")
+        else:
+            if not self.token:
+                self.get_token()
+            auth_token = self.token
+            token_source = "fresh"
+            print("🔄 Using freshly fetched authorization token (generator-details)")
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {auth_token}",
+        }
+
+        records: List[dict] = []
+        token_refreshed = False
+
+        endpoint = f"{self.BASE_URL}//api/v1/mastr-api/get-generator-details"
+
+        for idx, site_id in enumerate(site_ids):
+            payload = {"ids": [site_id], "year": year}
+
+            response = requests.post(endpoint, headers=headers, json=payload)
+
+            # If token fails with 401 and we haven't refreshed yet, get fresh token and retry
+            if response.status_code == 401 and not token_refreshed:
+                if token_source == "hardcoded":
+                    print("⚠️ Hardcoded token returned 401 (generator-details)")
+                print("🔄 Fetching fresh token via login (generator-details)...")
+                auth_token = self.get_token()
+                headers["Authorization"] = f"Bearer {auth_token}"
+                token_source = "fresh"
+                token_refreshed = True
+                response = requests.post(endpoint, headers=headers, json=payload)
+
+            if response.status_code != 200:
+                print(
+                    f"[{idx+1}/{len(site_ids)}] {site_id}: Failed ({response.status_code}) - {response.text}"
+                )
+                continue
+
+            try:
+                result = response.json()
+                for entry in result:
+                    entry["year"] = year
+                    records.append(entry)
+            except Exception as e:
+                print(
+                    f"[{idx+1}/{len(site_ids)}] {site_id}: Error parsing response - {e}"
+                )
+                continue
+
+        if not records:
+            print("⚠️ No Blindleister generator-details records fetched")
+            return pd.DataFrame()
+
+        df = pd.DataFrame(records)
+        print(f"✅ Fetched {len(df)} Blindleister generator-details records")
+        return df
+
+
+# =============================================================================
+# ENERVIS (ANEMOS) API CLIENT
+# =============================================================================
+
+
+class AnemosAPI:
+    """Client for Anemos (Enervis) API"""
+
+    BASE_URL = "https://api.anemosgmbh.com"
+    AUTH_URL = (
+        "https://keycloak.anemosgmbh.com/auth/realms/awis/protocol/openid-connect/token"
+    )
+
+    def __init__(self, email: str, password: str):
+        self.email = email
+        self.password = password
+        self.token = None
+
+    def get_token(self) -> str:
+        """Get access token"""
+        data = {
+            "client_id": "webtool_vue",
+            "grant_type": "password",
+            "username": self.email,
+            "password": self.password,
+        }
+        response = requests.post(self.AUTH_URL, data=data)
+        response.raise_for_status()
+        self.token = response.json()["access_token"]
+        return self.token
+
+    def get_historical_product_id(self) -> int:
+        """Get hist-ondemand product ID"""
+        if not self.token:
+            self.get_token()
+        headers = {"Authorization": f"Bearer {self.token}"}
+        response = requests.get(f"{self.BASE_URL}/products_mva", headers=headers)
+        response.raise_for_status()
+        products = response.json()
+        for p in products:
+            if "hist-ondemand" in p["mva_product_type"]["name"].lower():
+                return p["id"]
+        raise Exception("hist-ondemand product not found")
+
+    def start_job(self, product_id: int, parkinfo: List[Dict]) -> Optional[str]:
+        """Start historical job with automatic token refresh on 401"""
+        if not parkinfo:
+            print("⚠️ No parkinfo provided, skipping job")
+            return None
+
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": "application/json",
+        }
+        payload = {"mva_product_id": product_id, "parameters": {"parkinfo": parkinfo}}
+
+        # Retry logic for token expiration
+        for attempt in range(2):
+            response = requests.post(
+                f"{self.BASE_URL}/jobs", headers=headers, json=payload
+            )
+
+            if response.status_code == 401 and attempt == 0:
+                print("🔄 Token expired during job start, refreshing...")
+                self.get_token()
+                headers["Authorization"] = f"Bearer {self.token}"
+                continue
+
+            if response.status_code != 200:
+                print(f"❌ Job start failed: {response.text}")
+                response.raise_for_status()
+
+            job_uuid = response.json()["uuid"]
+            print(f"✅ Job started: {job_uuid}")
+            return job_uuid
+
+        return None
+
+    def wait_for_job(self, job_uuid: str, poll_interval: int = 10) -> Dict:
+        """Poll job status until complete"""
+        url = f"{self.BASE_URL}/jobs/{job_uuid}"
+        while True:
+            headers = {"Authorization": f"Bearer {self.token}"}
+            response = requests.get(url, headers=headers)
+
+            if response.status_code == 401:
+                print("🔄 Token expired, refreshing...")
+                self.get_token()
+                headers = {"Authorization": f"Bearer {self.token}"}
+                response = requests.get(url, headers=headers)
+
+            response.raise_for_status()
+            job_info = response.json()
+            if isinstance(job_info, list):
+                job_info = job_info[0]
+
+            status = job_info.get("status")
+            print(f"⏳ Job status: {status}")
+
+            if status in ["DONE", "COMPLETED"]:
+                return job_info
+            elif status in ["FAILED", "CANCELED"]:
+                raise Exception(f"Job ended with status: {status}")
+
+            time.sleep(poll_interval)
+
+    def extract_results(self, job_info: Dict) -> List[pd.DataFrame]:
+        """Extract results from job info"""
+        results = job_info.get("info", {}).get("results", [])
+        if not results:
+            print("❌ No results found in job")
+            return []
+
+        dfs = []
+        for result in results:
+            turbine_id = result.get("id")
+            year_data = result.get("Marktwertdifferenzen")
+            if year_data:
+                df = pd.DataFrame.from_dict(
+                    year_data, orient="index", columns=["Marktwertdifferenz"]
+                )
+                df.index.name = "Year"
+                df = df.reset_index()
+                df["id"] = turbine_id
+                dfs.append(df)
+
+        print(f"✅ Extracted {len(dfs)} Enervis result DataFrames")
+        return dfs
+
+
+# =============================================================================
+# TURBINE MATCHING FUNCTIONS (for Enervis)
+# =============================================================================
+
+
+def clean_manufacturer_name(name: str) -> str:
+    """Clean manufacturer name by removing common suffixes"""
+    if not name or pd.isna(name):
+        return ""
+    name = str(name).strip()
+
+    remove_phrases = [
+        "gmbh & co. kg",
+        "central europe",
+        "deutschland gmbh",
+        "energy gmbh",
+        "deutschland",
+        "gmbh",
+        "se",
+        "energy",
+        "ag",
+    ]
+    for phrase in remove_phrases:
+        pattern = r"\b" + re.escape(phrase) + r"\b"
+        name = re.sub(pattern, "", name, flags=re.IGNORECASE)
+
+    name = re.sub(r"\s+", " ", name)
+    name_lower = name.lower().strip()
+
+    if "ge wind" in name_lower or "ge energy" in name_lower:
+        name = "ge"
+    elif "neg micon" in name_lower:
+        name = "nm"
+    elif "repower" in name_lower:
+        name = "repower"
+
+    return name.strip().lower()
+
+
+def clean_turbine_model(name: str) -> str:
+    """Clean turbine model name"""
+    name = str(name)
+    if not name or pd.isna(name):
+        return ""
+
+    name = name.strip()
+
+    remove_prefixes = [
+        "mit serrations",
+        "delta 4000",
+        "delta4000",
+        "neg micon",
+        "senvion",
+        "enercon",
+        "nercon",
+        "vensys",
+        "vestas",
+        "nordex",
+        "repower",
+        "siemens",
+    ]
+    for prefix in remove_prefixes:
+        pattern = r"\b" + re.escape(prefix) + r"\b"
+        name = re.sub(pattern, "", name, flags=re.IGNORECASE)
+
+    name = re.sub(r"(\d),(\d)", r"\1.\2", name)
+
+    suffixes_to_remove = ["turbine", "wind"]
+    for suffix in suffixes_to_remove:
+        pattern = r"\b" + re.escape(suffix) + r"\b"
+        name = re.sub(pattern, "", name, flags=re.IGNORECASE)
+
+    name = name.strip("- ").strip()
+    return name
+
+
+def prepare_turbine_matching_dataframe(
+    df_turbines: pd.DataFrame,
+    df_ref: pd.DataFrame,
+    nan_path: Path,
+    threshold: int = 76,
+) -> pd.DataFrame:
+    """Prepare turbine DataFrame with fuzzy matching to reference database"""
+    df = df_turbines.copy()
+    nan_path.parent.mkdir(parents=True, exist_ok=True)
+
+    df["clean_manufacturer"] = df["manufacturer"].apply(clean_manufacturer_name)
+    df["turbine_model_clean"] = df["turbine_model"].apply(clean_turbine_model)
+    df["add_turbine"] = df["turbine_model"]
+    df["net_power_mw"] = df["net_power_kw"] / 1000
+
+    vestas_senvion_enercon = [
+        "Vestas Deutschland GmbH",
+        "Senvion Deutschland GmbH",
+        "ENERCON GmbH",
+        "VENSYS Energy AG",
+        "Enron Wind GmbH",
+        "NEG Micon Deutschland GmbH",
+    ]
+    nordex_repower = [
+        "Nordex Energy GmbH",
+        "REpower Systems SE",
+        "Nordex Germany GmbH",
+        "eno energy GmbH",
+    ]
+
+    df.loc[df["manufacturer"].isin(vestas_senvion_enercon), "add_turbine"] = (
+        df["turbine_model_clean"].astype(str).str.strip()
+        + " "
+        + df["net_power_mw"].round(3).astype(str)
+        + "MW"
+    )
+    df.loc[df["manufacturer"].isin(nordex_repower), "add_turbine"] = (
+        df["turbine_model_clean"].astype(str).str.strip()
+        + " "
+        + df["net_power_kw"].astype(str)
+    )
+    df.loc[df["manufacturer"].isin(["REpower Systems SE"]), "add_turbine"] = (
+        df["turbine_model_clean"].astype(str).str.strip()
+        + " "
+        + df["hub_height_m"].astype(str)
+    )
+
+    name_to_power = {}
+    if "rated_power" in df_ref.columns:
+        name_to_power = df_ref.set_index("name")["rated_power"].to_dict()
+
+    hardcoded_keys = list(TURBINE_HARDCODED_MAP.keys())
+
+    def match_with_hardcoded(row):
+        if row["turbine_model"] in TURBINE_HARDCODED_MAP:
+            return TURBINE_HARDCODED_MAP[row["turbine_model"]]
+        if row["add_turbine"] in TURBINE_HARDCODED_MAP:
+            return TURBINE_HARDCODED_MAP[row["add_turbine"]]
+        if row["turbine_model_clean"] in TURBINE_HARDCODED_MAP:
+            return TURBINE_HARDCODED_MAP[row["turbine_model_clean"]]
+
+        if isinstance(row["add_turbine"], str) and row["add_turbine"].strip():
+            match_result = process.extractOne(
+                row["add_turbine"], hardcoded_keys, scorer=fuzz.token_set_ratio
+            )
+            if match_result and match_result[1] >= threshold:
+                hardcoded_match = match_result[0]
+                matched_name = TURBINE_HARDCODED_MAP[hardcoded_match]
+                if matched_name in name_to_power:
+                    ref_power = name_to_power[matched_name]
+                    user_power = row.get("net_power_kw", 0)
+                    power_diff = (
+                        abs(ref_power - user_power) / ref_power if ref_power else 1
+                    )
+                    if power_diff < 0.1:
+                        return matched_name
+
+        if isinstance(row["add_turbine"], str) and row["add_turbine"].strip():
+            match_result = process.extractOne(
+                row["add_turbine"],
+                df_ref["name"].dropna().unique(),
+                scorer=fuzz.token_set_ratio,
+            )
+            if match_result and match_result[1] >= threshold:
+                return match_result[0]
+
+        return None
+
+    df["Matched_Turbine_Name"] = df.apply(match_with_hardcoded, axis=1)
+    name_to_id = df_ref.set_index("name")["id"].to_dict()
+    df["Matched_Turbine_ID"] = df["Matched_Turbine_Name"].map(name_to_id)
+
+    df.to_excel(nan_path, index=False)
+    print(f"💾 Turbine matching saved to {nan_path}")
+
+    matched_count = df["Matched_Turbine_ID"].notna().sum()
+    print(f"✅ Matched {matched_count}/{len(df)} turbines to reference database")
 
     return df
 
 
+# =============================================================================
+# BLINDLEISTER DATA PROCESSING
+# =============================================================================
+
+
+def process_blindleister_data(
+    df_flat: pd.DataFrame,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Process Blindleister market price data
+    Returns: (yearly_weighted_df, overall_weighted_df)
+    """
+    if df_flat.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    # Calculate monthly spot-rmv difference
+    df_flat["spot_rmv_EUR_monthly_ytd"] = (
+        df_flat["monthly_generated_energy_mwh"]
+        * df_flat["monthly_market_price_eur_mwh"]
+    ) - (
+        df_flat["monthly_generated_energy_mwh"]
+        * df_flat["monthly_reference_market_price_eur_mwh"]
+    )
+
+    # Aggregate by year and unit
+    permalo_yearly_blind = (
+        df_flat.groupby(["year", "unit_mastr_id"], dropna=False)
+        .agg(
+            spot_rmv_EUR_yearly=("spot_rmv_EUR_monthly_ytd", "sum"),
+            sum_prod_yearly=("monthly_generated_energy_mwh", "sum"),
+        )
+        .assign(blind_yearly=lambda x: x["spot_rmv_EUR_yearly"] / x["sum_prod_yearly"])
+        .reset_index()
+    )
+
+    # Aggregate over the years
+    permalo_blind = (
+        df_flat.groupby("unit_mastr_id", dropna=False)
+        .agg(
+            spot_rmv_EUR_ytd=("spot_rmv_EUR_monthly_ytd", "sum"),
+            sum_prod_ytd=("monthly_generated_energy_mwh", "sum"),
+        )
+        .assign(
+            average_weighted_eur_mwh_blindleister=lambda x: x["spot_rmv_EUR_ytd"]
+            / x["sum_prod_ytd"]
+        )
+        .reset_index()
+    )
+
+    # Pivot by year
+    weighted_years_pivot = permalo_yearly_blind.pivot(
+        index="unit_mastr_id", columns="year", values="blind_yearly"
+    ).reset_index()
+
+    weighted_years_pivot.columns.name = None
+    weighted_years_pivot = weighted_years_pivot.rename(
+        columns={
+            2021: "weighted_2021_eur_mwh_blindleister",
+            2023: "weighted_2023_eur_mwh_blindleister",
+            2024: "weighted_2024_eur_mwh_blindleister",
+            2025: "weighted_2025_eur_mwh_blindleister",
+        }
+    )
+
+    # Merge yearly and overall
+    final_weighted_blindleister = pd.merge(
+        weighted_years_pivot,
+        permalo_blind[["unit_mastr_id", "average_weighted_eur_mwh_blindleister"]],
+        on="unit_mastr_id",
+        how="left",
+    )
+
+    # Round values (convert column names to string first to handle integer year columns)
+    cols_to_round = [
+        col
+        for col in final_weighted_blindleister.columns
+        if "eur_mwh" in str(col).lower()
+    ]
+    final_weighted_blindleister[cols_to_round] = final_weighted_blindleister[
+        cols_to_round
+    ].round(2)
+
+    print(
+        f"✅ Processed Blindleister data for {len(final_weighted_blindleister)} units"
+    )
+
+    return final_weighted_blindleister
+
+
+def merging_monthly_production_blindleister_real_production_stamm(
+    df_stamm: pd.DataFrame, df_blindleister: pd.DataFrame, df_production: pd.DataFrame
+) -> pd.DataFrame:
+    """Merge Blindleister monthly production with real production data"""
+    if df_blindleister.empty or df_production.empty:
+        print("⚠️ One or both DataFrames are empty, cannot merge")
+        return pd.DataFrame()
+
+    # truncate "month" from "time_berlin" which has format "YYYY-MM-DD HH:MM:SS" to get "date_month" in format "YYYY-MM"
+    df_production["date_month"] = (
+        pd.to_datetime(df_production["time_berlin"]).dt.to_period("M").dt.to_timestamp()
+    )
+
+    # Build monthly timestamp key from numeric year/month (avoids int + str errors)
+    df_blindleister["date_month"] = pd.to_datetime(
+        {
+            "year": pd.to_numeric(df_blindleister["year"], errors="coerce"),
+            "month": pd.to_numeric(df_blindleister["month"], errors="coerce"),
+            "day": 1,
+        },
+        errors="coerce",
+    )
+
+    if "Marktstammdatenregister-ID" in df_stamm.columns:
+        df_stamm.rename(
+            columns={"Marktstammdatenregister-ID": "unit_mastr_id"}, inplace=True
+        )
+
+    df_blindleister["unit_mastr_id"] = (
+        df_blindleister["unit_mastr_id"].astype(str).str.strip()
+    )
+    df_stamm["unit_mastr_id"] = df_stamm["unit_mastr_id"].astype(str).str.strip()
+
+    # checking if all unit_mastr_id in Blindleister are present in Stamm
+    blind_units_set = set(df_blindleister["unit_mastr_id"].unique())
+    stamm_units_set = set(df_stamm["unit_mastr_id"].unique())
+    missing_in_blind = stamm_units_set - blind_units_set
+    if missing_in_blind:
+        print(
+            f"⚠️ {len(missing_in_blind)} unit_mastr_id from stamm are missing in blind. {list(missing_in_blind)}"
+        )
+    else:
+        print("✅ All unit_mastr_id from Blindleister are present in Stamm")
+
+    blind_stamm_unit = pd.merge(
+        df_blindleister[
+            [
+                "unit_mastr_id",
+                "year",
+                "month",
+                "date_month",
+                "monthly_generated_energy_mwh",
+            ]
+        ],
+        df_stamm[["unit_mastr_id", "malo", "Projekt"]],
+        on="unit_mastr_id",
+        how="left",
+    )
+
+    # skip malo which has missing missing_in_blind
+    blind_stamm_unit = blind_stamm_unit[
+        ~blind_stamm_unit["malo"].isin(missing_in_blind)
+    ]
+
+    # aggregating by malo + month, and summing monthly production
+    blind_stamm_malo = blind_stamm_unit.groupby(
+        ["malo", "date_month"], as_index=False
+    ).agg(
+        Project=("Projekt", lambda x: x.dropna().unique().tolist()),
+        monthly_blindleister_mwh=("monthly_generated_energy_mwh", "sum"),
+    )
+
+    agg_dict = {}
+    # aggregate df_production by malo and date_month, summing each different "production" columns, skip aggregating the column is not available
+    if "total_produce_kWh" in df_production.columns:
+        agg_dict["total_produce_kWh"] = "sum"
+    if "best_power_curve_output_kwh" in df_production.columns:
+        agg_dict["best_power_curve_output_kwh"] = "sum"
+    if "DA_forecast_prod_kwh_sum_hourly" in df_production.columns:
+        agg_dict["DA_forecast_prod_kwh_sum_hourly"] = "sum"
+
+    df_production_monthly = (
+        df_production.groupby(["malo", "date_month"]).agg(agg_dict).reset_index()
+    )
+
+    blind_stamm_malo["malo"] = blind_stamm_malo["malo"].astype(str).str.strip()
+    df_production_monthly["malo"] = (
+        df_production_monthly["malo"].astype(str).str.strip()
+    )
+
+    merged_monthly_malo = pd.merge(
+        blind_stamm_malo,
+        df_production_monthly,
+        on=["malo", "date_month"],
+        how="right",
+    )
+
+    merged_monthly_malo["monthly_real_produce_MWh"] = (
+        merged_monthly_malo["total_produce_kWh"] / 1000
+    )
+    merged_monthly_malo["monthly_best_power_curve_output_MWh"] = (
+        merged_monthly_malo["best_power_curve_output_kwh"] / 1000
+    )
+    merged_monthly_malo["monthly_DA_forecast_prod_MWh"] = (
+        merged_monthly_malo["DA_forecast_prod_kwh_sum_hourly"] / 1000
+    )
+
+    merged_monthly_malo.drop(
+        columns=[
+            "total_produce_kWh",
+            "best_power_curve_output_kwh",
+            "DA_forecast_prod_kwh_sum_hourly",
+        ],
+        inplace=True,
+    )
+
+    print(
+        f"✅ Merged Blindleister with production data: {len(merged_monthly_malo)} records"
+    )
+
+    return merged_monthly_malo
+
+
+def merging_monthly_production_blindleister_real_production(
+    df_blindleister: pd.DataFrame, df_production: pd.DataFrame
+) -> pd.DataFrame:
+    """Merge Blindleister monthly production with real production data"""
+    if df_blindleister.empty or df_production.empty:
+        print("⚠️ One or both DataFrames are empty, cannot merge")
+        return pd.DataFrame()
+
+    # truncate "month" from "time_berlin" which has format "YYYY-MM-DD HH:MM:SS" to get "date_month" in format "YYYY-MM"
+    df_production["date_month"] = (
+        pd.to_datetime(df_production["time_berlin"]).dt.to_period("M").dt.to_timestamp()
+    )
+
+    # Build monthly timestamp key from numeric year/month (avoids int + str errors)
+    df_blindleister["date_month"] = pd.to_datetime(
+        {
+            "year": pd.to_numeric(df_blindleister["year"], errors="coerce"),
+            "month": pd.to_numeric(df_blindleister["month"], errors="coerce"),
+            "day": 1,
+        },
+        errors="coerce",
+    )
+
+    df_blindleister["unit_mastr_id"] = (
+        df_blindleister["unit_mastr_id"].astype(str).str.strip()
+    )
+    df_production["unit_mastr_id"] = df_production["malo"].astype(str).str.strip()
+
+    agg_dict = {}
+    # aggregate df_production by malo and date_month, summing each different "production" columns, skip aggregating the column is not available
+    if "production_mwh" in df_production.columns:
+        agg_dict["total_produce_kWh"] = "sum"
+    if "best_power_curve_output_kwh" in df_production.columns:
+        agg_dict["best_power_curve_output_kwh"] = "sum"
+    if "DA_forecast_prod_kwh_sum_hourly" in df_production.columns:
+        agg_dict["DA_forecast_prod_kwh_sum_hourly"] = "sum"
+
+    df_production_monthly = (
+        df_production.groupby(["malo", "date_month"]).agg(agg_dict).reset_index()
+    )
+
+    merged_monthly_malo = pd.merge(
+        df_blindleister,
+        df_production_monthly,
+        on=["malo", "date_month"],
+        how="right",
+    )
+
+    merged_monthly_malo["monthly_real_produce_MWh"] = (
+        merged_monthly_malo["total_produce_kWh"] / 1000
+    )
+    merged_monthly_malo["monthly_best_power_curve_output_MWh"] = (
+        merged_monthly_malo["best_power_curve_output_kwh"] / 1000
+    )
+    merged_monthly_malo["monthly_DA_forecast_prod_MWh"] = (
+        merged_monthly_malo["DA_forecast_prod_kwh_sum_hourly"] / 1000
+    )
+
+    print(
+        f"✅ Merged Blindleister with production data: {len(merged_monthly_malo)} records"
+    )
+
+    return merged_monthly_malo
+
+
+# =============================================================================
+# ENERVIS DATA PROCESSING
+# =============================================================================
+
+
+def process_enervis_results(
+    dfs: List[pd.DataFrame], target_years: List[int] = TARGET_YEARS
+) -> pd.DataFrame:
+    """Process Enervis API results to create pivot table with yearly averages"""
+    if not dfs:
+        return pd.DataFrame()
+
+    all_df = pd.concat(dfs, ignore_index=True)
+    all_df["Year"] = all_df["Year"].astype(str)
+
+    # Convert target_years to strings for comparison
+    target_years_str = [str(y) for y in target_years]
+
+    existing_years = all_df["Year"].unique().tolist()
+    valid_years = [y for y in target_years_str if y in existing_years]
+
+    if not valid_years:
+        print("⚠️ No target years found in Enervis data")
+        return pd.DataFrame()
+
+    all_df = all_df[all_df["Year"].isin(valid_years)].copy()
+
+    # choosing the minimum Marktwertdifferenz per id/malo and year
+    df_filtered = all_df.loc[
+        all_df.groupby(["id", "Year"])["Marktwertdifferenz"].idxmin()
+    ].copy()
+    df_filtered["Marktwertdifferenz"] = df_filtered["Marktwertdifferenz"].round(2)
+
+    df_pivot = (
+        df_filtered.pivot(index="id", columns="Year", values="Marktwertdifferenz")
+        .rename_axis(None, axis=1)
+        .reset_index()
+    )
+
+    for year_str in target_years_str:
+        if year_str not in df_pivot.columns:
+            df_pivot[year_str] = np.nan
+
+    # after filtering the minimum value each year, calculate the average over the target years
+    df_pivot["avg_enervis"] = (
+        df_pivot[target_years_str].mean(axis=1, skipna=True).round(2)
+    )
+    columns_to_keep = ["id"] + target_years_str + ["avg_enervis"]
+    df_result = df_pivot[columns_to_keep]
+
+    # Rename columns to match Blindleister naming
+    rename_dict = {"id": "malo"}
+    for year in target_years:
+        rename_dict[str(year)] = f"enervis_{year}"
+
+    df_result = df_result.rename(columns=rename_dict)
+
+    print(f"✅ Processed Enervis data for {len(df_result)} turbines")
+    return df_result
+
+
+def run_enervis_calculation(
+    df_wind_units: pd.DataFrame,
+    anemos_api: AnemosAPI,
+    turbine_ref_df: pd.DataFrame,
+    nan_path: Path,
+    batch_info: str = "",
+) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+    """
+    Runs the Enervis calculation for a given set of wind units.
+    Returns: (results_df, matching_df)
+    """
+    if df_wind_units.empty:
+        return None, None
+
+    df_turbines_with_match = prepare_turbine_matching_dataframe(
+        df_wind_units, turbine_ref_df, threshold=76, nan_path=nan_path
+    )
+
+    df_matched_turbines = df_turbines_with_match.dropna(
+        subset=["Matched_Turbine_ID"]
+    ).copy()
+
+    if df_matched_turbines.empty:
+        print("⚠️ No turbines were matched for Enervis API call.")
+        return None, df_turbines_with_match
+
+    df_matched_turbines["hub_height_m"] = (
+        df_matched_turbines["hub_height_m"].fillna(104).replace(0, 104)
+    )
+    df_matched_turbines["hub_height_m"] = df_matched_turbines["hub_height_m"].astype(
+        int
+    )
+
+    # Validate and fix hub heights (API typically accepts 50-250m range)
+    MIN_HUB_HEIGHT = 50
+    MAX_HUB_HEIGHT = 250
+
+    invalid_heights = df_matched_turbines[
+        (df_matched_turbines["hub_height_m"] < MIN_HUB_HEIGHT)
+        | (df_matched_turbines["hub_height_m"] > MAX_HUB_HEIGHT)
+    ]
+
+    if not invalid_heights.empty:
+        print(f"⚠️ Found {len(invalid_heights)} turbines with invalid hub heights:")
+        for idx, row in invalid_heights.iterrows():
+            old_height = row["hub_height_m"]
+            print(
+                f"   malo={row['malo']}, hub_height={old_height}m (outside {MIN_HUB_HEIGHT}-{MAX_HUB_HEIGHT}m range)"
+            )
+
+        # Fix invalid heights: clip to valid range
+        df_matched_turbines["hub_height_m"] = df_matched_turbines["hub_height_m"].clip(
+            MIN_HUB_HEIGHT, MAX_HUB_HEIGHT
+        )
+        print(
+            f"✅ Hub heights clipped to valid range ({MIN_HUB_HEIGHT}-{MAX_HUB_HEIGHT}m)"
+        )
+
+    df_matched_turbines["Matched_Turbine_ID"] = df_matched_turbines[
+        "Matched_Turbine_ID"
+    ].astype(int)
+    df_matched_turbines["malo"] = df_matched_turbines["malo"].astype(str).str.strip()
+
+    # Build parkinfo with detailed logging and validation
+    parkinfo = []
+    error_log_path = nan_path.parent / f"{nan_path.stem}_error_log.txt"
+    skipped_rows = []
+
+    def _ensure_all_submitted_ids(df_results: Optional[pd.DataFrame]) -> pd.DataFrame:
+        """Ensure returned results include all submitted ids."""
+        submitted_ids = [str(p["id"]) for p in parkinfo]
+        df_submitted = pd.DataFrame({"malo": submitted_ids})
+
+        # Use enervis_ prefix for year columns
+        enervis_year_cols = [f"enervis_{year}" for year in TARGET_YEARS]
+
+        if df_results is None or df_results.empty:
+            df_results_norm = pd.DataFrame(
+                columns=["malo"] + enervis_year_cols + ["avg_enervis"]
+            )
+        else:
+            df_results_norm = df_results.copy()
+            df_results_norm["malo"] = df_results_norm["malo"].astype(str)
+            for year_col in enervis_year_cols:
+                if year_col not in df_results_norm.columns:
+                    df_results_norm[year_col] = np.nan
+            if "avg_enervis" not in df_results_norm.columns:
+                df_results_norm["avg_enervis"] = (
+                    df_results_norm[enervis_year_cols]
+                    .mean(axis=1, skipna=True)
+                    .round(2)
+                )
+
+        merged = df_submitted.merge(df_results_norm, on="malo", how="left")
+        for year_col in enervis_year_cols:
+            if year_col not in merged.columns:
+                merged[year_col] = np.nan
+        if "avg_enervis" not in merged.columns:
+            merged["avg_enervis"] = (
+                merged[enervis_year_cols].mean(axis=1, skipna=True).round(2)
+            )
+        return merged
+
+    for idx, row in df_matched_turbines.iterrows():
+        try:
+            hub_height = int(row["hub_height_m"])
+
+            if hub_height < MIN_HUB_HEIGHT or hub_height > MAX_HUB_HEIGHT:
+                skipped_rows.append(
+                    {
+                        "malo": row["malo"],
+                        "reason": f"Invalid hub height: {hub_height}m",
+                        "lat": row.get("latitude"),
+                        "lon": row.get("longitude"),
+                    }
+                )
+                continue
+
+            park_entry = {
+                "id": int(row["malo"]),
+                "lat": str(row["latitude"]),
+                "lon": str(row["longitude"]),
+                "turbine_type_id": int(row["Matched_Turbine_ID"]),
+                "hub_height": hub_height,
+            }
+            parkinfo.append(park_entry)
+
+        except Exception as e:
+            error_msg = f"Error building parkinfo for malo {row.get('malo', 'UNKNOWN')}: {str(e)}\n"
+            error_msg += f"  Row data: lat={row.get('latitude')}, lon={row.get('longitude')}, turbine_id={row.get('Matched_Turbine_ID')}, hub_height={row.get('hub_height_m')}\n"
+            print(f"⚠️ {error_msg}")
+
+            with open(error_log_path, "a") as f:
+                f.write(error_msg)
+            skipped_rows.append(
+                {
+                    "malo": row.get("malo", "UNKNOWN"),
+                    "reason": str(e),
+                    "lat": row.get("latitude"),
+                    "lon": row.get("longitude"),
+                }
+            )
+
+    if skipped_rows:
+        print(f"⚠️ Skipped {len(skipped_rows)} rows due to validation errors:")
+        for skip in skipped_rows[:10]:  # Show first 10
+            print(f"   {skip}")
+        with open(error_log_path, "a") as f:
+            f.write(f"\nSkipped rows:\n")
+            for skip in skipped_rows:
+                f.write(f"  {skip}\n")
+
+    print(f"\n📍 Submitting {len(parkinfo)} locations to Enervis API")
+    if len(parkinfo) == 0:
+        print("⚠️ No valid locations to submit after validation")
+        return None, df_turbines_with_match
+
+    print(
+        f"   Hub height range: {min(p['hub_height'] for p in parkinfo)}-{max(p['hub_height'] for p in parkinfo)}m"
+    )
+    print(f"   Sample locations (first 3):")
+    for i, entry in enumerate(parkinfo[:3]):
+        print(
+            f"     {i+1}. malo={entry['id']}, lat={entry['lat']}, lon={entry['lon']}, turbine_type={entry['turbine_type_id']}, height={entry['hub_height']}m"
+        )
+
+    product_id = anemos_api.get_historical_product_id()
+
+    # Try submitting all locations first
+    try:
+        job_uuid = anemos_api.start_job(product_id, parkinfo)
+        if job_uuid:
+            job_info = anemos_api.wait_for_job(job_uuid)
+            dfs = anemos_api.extract_results(job_info)
+            df_results = process_enervis_results(dfs)
+            return _ensure_all_submitted_ids(df_results), df_turbines_with_match
+
+    except Exception as e:
+        # Batch submission failed - retry individually to find the problematic row(s)
+        print(f"⚠️ Batch submission failed: {str(e)}")
+        print(
+            f" 🍌🍌🍌 Retrying with individual location submissions to identify problematic row(s)..."
+        )
+
+        # Try submitting locations one by one
+        successful_results = []
+        failed_locations = []
+
+        for i, entry in enumerate(parkinfo):
+            try:
+                print(
+                    f"  Processing {i+1}/{len(parkinfo)}: malo={entry['id']}...",
+                    end=" ",
+                )
+                job_uuid = anemos_api.start_job(product_id, [entry])
+                if job_uuid:
+                    job_info = anemos_api.wait_for_job(job_uuid)
+                    dfs = anemos_api.extract_results(job_info)
+                    if dfs:
+                        successful_results.extend(dfs)
+                        print("✅")
+                    else:
+                        print("⚠️ No results")
+            except Exception as location_error:
+                print(
+                    f"🍌🍌🍌  Error processing malo={entry['id']}: {str(location_error)[:50]}"
+                )
+                error_detail = {
+                    "malo": entry["id"],
+                    "lat": entry["lat"],
+                    "lon": entry["lon"],
+                    "turbine_type_id": entry["turbine_type_id"],
+                    "hub_height": entry["hub_height"],
+                    "error": str(location_error),
+                }
+                failed_locations.append(error_detail)
+                print(f"❌ {str(location_error)[:50]}")
+
+        # Summary
+        print(f"\n📊 Individual submission results:")
+        print(f"   ✅ Successful: {len(successful_results)}/{len(parkinfo)}")
+        print(f"   ❌ Failed: {len(failed_locations)}/{len(parkinfo)}")
+
+        if failed_locations:
+            # Log ONLY the failed rows with full details
+            print(
+                f"\n🍌🍌🍌  Found {len(failed_locations)} problematic row(s) - logging details to: {error_log_path}"
+            )
+
+            with open(error_log_path, "a") as f:
+                f.write("=" * 80 + "\n")
+                f.write(f"❌ API ERROR{' for ' + batch_info if batch_info else ''}:\n")
+                f.write(f"   Initial error: {str(e)}\n")
+                f.write(f"   Batch size: {len(parkinfo)} locations\n")
+                f.write(f"   Failed rows: {len(failed_locations)}\n")
+                f.write("=" * 80 + "\n\n")
+
+                # Get original dataframe data for ONLY the failed rows
+                failed_malo_ids = [str(fail["malo"]) for fail in failed_locations]
+                df_failed_rows = df_matched_turbines[
+                    df_matched_turbines["malo"].isin(failed_malo_ids)
+                ].copy()
+
+                f.write(
+                    f"PROBLEMATIC ROW(S) - {len(failed_locations)} row(s) that caused the error:\n"
+                )
+                f.write("=" * 80 + "\n\n")
+
+                for i, fail in enumerate(failed_locations, 1):
+                    f.write(f"--- Failed Row {i}/{len(failed_locations)} ---\n")
+                    f.write(f"Error: {fail['error']}\n\n")
+                    f.write(f"Submitted to API:\n")
+                    f.write(f"  malo: {fail['malo']}\n")
+                    f.write(f"  latitude: {fail['lat']}\n")
+                    f.write(f"  longitude: {fail['lon']}\n")
+                    f.write(f"  turbine_type_id: {fail['turbine_type_id']}\n")
+                    f.write(f"  hub_height: {fail['hub_height']}m\n\n")
+
+                    # Find and write full row details
+                    malo_row = df_failed_rows[
+                        df_failed_rows["malo"] == str(fail["malo"])
+                    ]
+                    if not malo_row.empty:
+                        f.write(f"Full row details from original data:\n")
+                        for col in malo_row.columns:
+                            f.write(f"  {col}: {malo_row.iloc[0][col]}\n")
+                    f.write("\n" + "🍌" * 10 + "\n\n")
+
+                f.write("=" * 80 + "\n\n")
+
+            print(
+                f"📄 See {error_log_path.name} for details on the {len(failed_locations)} problematic row(s)"
+            )
+
+        df_partial = (
+            process_enervis_results(successful_results) if successful_results else None
+        )
+        df_results_all = _ensure_all_submitted_ids(df_partial)
+
+        if not successful_results:
+            print("❌ No successful results after individual submissions")
+        return df_results_all, df_turbines_with_match
+
+
+# =============================================================================
+# MAIN EXECUTION
+# =============================================================================
+
+
 def load_stammdaten(path: Path) -> pd.DataFrame:
     """Load and validate master data (stammdaten) from Excel"""
-
     df = pd.read_excel(path, sheet_name="stammdaten", engine="openpyxl")
-
-    # Clean column names
-
     df.columns = df.columns.str.strip()
 
     # Convert malo to string
-
     df["malo"] = (
         df["malo"]
         .apply(
@@ -335,117 +1505,387 @@ def load_stammdaten(path: Path) -> pd.DataFrame:
     )
 
     # Convert MaStR ID to string
-
     if "Marktstammdatenregister-ID" in df.columns:
-
         df["Marktstammdatenregister-ID"] = (
             df["Marktstammdatenregister-ID"].astype(str).str.strip()
         )
-
         df.rename(columns={"Marktstammdatenregister-ID": "unit_mastr_id"}, inplace=True)
 
-    # Remove rows without malo
+    # Normalize common capacity column names for Enervis matching
+    # `prepare_turbine_matching_dataframe()` expects `net_power_kw`.
+    if "net_power_kw" not in df.columns:
+        if "net_power_kw_unit" in df.columns:
+            df.rename(columns={"net_power_kw_unit": "net_power_kw"}, inplace=True)
+        elif "net_power_mw" in df.columns:
+            df["net_power_kw"] = (
+                pd.to_numeric(df["net_power_mw"], errors="coerce") * 1000
+            )
 
+    # Remove rows without malo
     df.dropna(subset=("malo",), axis=0, inplace=True)
 
     print(f"✅ Loaded {len(df)} units from stammdaten")
+    return df
 
+
+# =============================================================================
+# PRODUCTION / PRICING UTILITIES
+# =============================================================================
+
+
+def convert_date_or_keep_string(date: Any) -> str:
+    """Convert a date-like value to string; keep original if conversion fails."""
+    try:
+        dt = pd.to_datetime(date, errors="raise", dayfirst=True)
+        if pd.isna(dt):
+            return ""
+        return dt.strftime("%Y-%m-%d")
+    except Exception:
+        return (
+            ""
+            if date is None or (isinstance(date, float) and np.isnan(date))
+            else str(date)
+        )
+
+
+def is_number(val: Any) -> bool:
+    """Check if a value can be converted to float."""
+    try:
+        float(val)
+        return True
+    except Exception:
+        return False
+
+
+def ensure_and_reorder(df: pd.DataFrame, order: List[str]) -> pd.DataFrame:
+    """Ensure columns exist in DataFrame and reorder them."""
+    missing_cols = [col for col in order if col and col not in df.columns]
+    for col in missing_cols:
+        df[col] = np.nan
+    valid_order = [col for col in order if col]
+    return df[valid_order]
+
+
+def normalize_nan_strings(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert literal 'nan' strings (any casing/whitespace) to actual nulls."""
+    if df is None or df.empty:
+        return df
+    return df.replace(to_replace=r"(?i)^\s*nan\s*$", value=np.nan, regex=True)
+
+
+def sanitize_for_excel(df: pd.DataFrame) -> pd.DataFrame:
+    """Sanitize DataFrame for Excel export.
+
+    Excel files can become "repairable" if cells contain:
+    - illegal XML control characters (e.g. \x00)
+    - extremely long strings (> 32,767 characters)
+    - non-scalar Python objects (lists/dicts/arrays/Period)
+    - inf values
+    """
+    if df is None or df.empty:
+        return df
+
+    df = df.copy()
+
+    # Excel's max string length per cell
+    EXCEL_MAX_CELL_CHARS = 32767
+    # Illegal XML characters for XLSX (control chars except tab/newline/CR)
+    illegal_xml_re = re.compile(r"[\x00-\x08\x0B-\x0C\x0E-\x1F]")
+
+    def _to_safe_string(val: Any) -> str:
+        if val is None or (isinstance(val, float) and np.isnan(val)):
+            return ""
+        if isinstance(val, (dict, list, np.ndarray)):
+            try:
+                val = json.dumps(val, ensure_ascii=False, default=str)
+            except Exception:
+                val = str(val)
+        elif isinstance(val, pd.Period):
+            val = str(val)
+        else:
+            val = str(val)
+
+        # Remove illegal control characters
+        val = illegal_xml_re.sub("", val)
+        # Truncate to Excel limit
+        if len(val) > EXCEL_MAX_CELL_CHARS:
+            val = val[: EXCEL_MAX_CELL_CHARS - 15] + "...(truncated)"
+        return val
+
+    # Sanitize column headers too (they become Excel cell values)
+    df.columns = [illegal_xml_re.sub("", str(c))[:255] for c in df.columns]
+
+    for col in df.columns:
+        # Replace inf values with empty string
+        df[col] = df[col].replace([np.inf, -np.inf], np.nan)
+
+        # Convert non-scalar / problematic objects to safe strings
+        if df[col].dtype == object:
+            df[col] = df[col].apply(
+                lambda x: (
+                    _to_safe_string(x)
+                    if isinstance(x, (list, dict, np.ndarray, pd.Period, str))
+                    else ("" if pd.isna(x) else x)
+                )
+            )
+        elif isinstance(df[col].dtype, pd.PeriodDtype):
+            df[col] = df[col].astype(str).apply(_to_safe_string)
+        elif pd.api.types.is_string_dtype(df[col].dtype):
+            df[col] = df[col].astype(str).apply(_to_safe_string)
+
+        # Convert numpy types to native Python types
+        if df[col].dtype.name.startswith("int"):
+            df[col] = df[col].astype("Int64")  # Nullable integer
+        elif df[col].dtype.name.startswith("float"):
+            df[col] = df[col].astype("float64")
+
+    return df
+
+
+def sanitize_sheet_name(name: str) -> str:
+    """Create an Excel-safe sheet name (<=31 chars, no special chars)."""
+    if name is None:
+        name = "Sheet"
+    name = str(name)
+    # Invalid in Excel sheet names: : \ / ? * [ ]
+    name = re.sub(r"[:\\/\?\*\[\]]", "_", name)
+    name = name.strip() or "Sheet"
+    return name[:31]
+
+
+# b
+def build_capacity_factor_comparison(
+    df_base: pd.DataFrame,
+    df_forecast: pd.DataFrame,
+) -> pd.DataFrame:
+    """Build per-malo capacity factor comparison table.
+
+    Expects both inputs to have:
+    - malo
+    - Projekt
+    - available_months, total_prod_mwh, capacity_factor_percent
+    - forecast_available_months, forecast_total_prod_mwh, forecast_capacity_factor_percent
+    """
+    if df_base is None or df_base.empty:
+        return pd.DataFrame()
+
+    cols_base = [
+        "malo",
+        "Projekt" "available_months",
+        "available_years",
+        "total_prod_mwh",
+        "capacity_factor_percent",
+    ]
+    cols_forecast = [
+        "malo",
+        "forecast_available_months",
+        "forecast_available_years",
+        "forecast_total_prod_mwh",
+        "forecast_capacity_factor_percent",
+    ]
+
+    base = df_base.copy()
+    for c in cols_base:
+        if c not in base.columns:
+            base[c] = np.nan
+    base = base[cols_base]
+
+    fc = (
+        df_forecast.copy()
+        if df_forecast is not None
+        else pd.DataFrame(columns=cols_forecast)
+    )
+    for c in cols_forecast:
+        if c not in fc.columns:
+            fc[c] = np.nan
+    fc = fc[cols_forecast]
+
+    out = base.merge(fc, on="malo", how="left")
+
+    for c in [
+        "available_months",
+        "forecast_available_months",
+        "total_prod_mwh",
+        "forecast_total_prod_mwh",
+        "capacity_factor_percent",
+        "forecast_capacity_factor_percent",
+    ]:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+
+    out["delta_cf_pct_points"] = (
+        out["forecast_capacity_factor_percent"] - out["capacity_factor_percent"]
+    )
+    out["delta_months"] = out["forecast_available_months"] - out["available_months"]
+    out["delta_total_prod_mwh"] = out["forecast_total_prod_mwh"] - out["total_prod_mwh"]
+
+    def _reason(row: pd.Series) -> str:
+        reasons: List[str] = []
+        if pd.isna(row.get("forecast_capacity_factor_percent")):
+            reasons.append("no_forecast_metrics")
+        if pd.notna(row.get("delta_months")) and row.get("delta_months") < 0:
+            reasons.append("fewer_months_in_forecast")
+        if (
+            pd.notna(row.get("delta_total_prod_mwh"))
+            and row.get("delta_total_prod_mwh") < 0
+        ):
+            reasons.append("lower_forecast_total_prod")
+        if not reasons:
+            reasons.append("ok")
+        return ";".join(reasons)
+
+    out["likely_reason"] = out.apply(_reason, axis=1)
+    return out
+
+
+def print_capacity_factor_debug(
+    df_compare: pd.DataFrame,
+    top_n: int = 25,
+    only_drops: bool = True,
+):
+    """Print a compact CF comparison summary (top drops by forecast-original)."""
+    if df_compare is None or df_compare.empty:
+        print("ℹ️ No capacity-factor comparison data to display")
+        return
+
+    df_view = df_compare.copy()
+    df_view = df_view[df_view["malo"].notna()].copy()
+
+    if only_drops:
+        df_view = df_view[
+            df_view["delta_cf_pct_points"].notna()
+            & (df_view["delta_cf_pct_points"] < 0)
+        ].copy()
+
+    df_view = df_view.sort_values("delta_cf_pct_points", ascending=True)
+    df_view = df_view.head(int(top_n))
+
+    print("\n===== CAPACITY FACTOR DEBUG (TOP DROPS) =====")
+    if df_view.empty:
+        print("✅ No forecast CF drops found (or no forecast CF available)")
+        return
+
+    cols = [
+        "malo",
+        "capacity_factor_percent",
+        "forecast_capacity_factor_percent",
+        "delta_cf_pct_points",
+        "available_months",
+        "forecast_available_months",
+        "delta_months",
+        "total_prod_mwh",
+        "forecast_total_prod_mwh",
+        "delta_total_prod_mwh",
+        "likely_reason",
+    ]
+    cols = [c for c in cols if c in df_view.columns]
+    df_print = df_view[cols].copy()
+
+    # Make it more readable in logs
+    for c in [
+        "capacity_factor_percent",
+        "forecast_capacity_factor_percent",
+        "delta_cf_pct_points",
+    ]:
+        if c in df_print.columns:
+            df_print[c] = df_print[c].round(3)
+    for c in ["total_prod_mwh", "forecast_total_prod_mwh", "delta_total_prod_mwh"]:
+        if c in df_print.columns:
+            df_print[c] = df_print[c].round(2)
+
+    print(df_print.to_string(index=False))
+
+
+def print_header(title: str):
+    """Print formatted section header."""
+    print("\n" + "=" * 50)
+    print(title)
+    print("=" * 50)
+
+
+def load_bigquery_fixings(project_id: str) -> pd.DataFrame:
+    """Load fixing prices from BigQuery."""
+    if pandas_gbq is None:
+        raise ImportError("pandas_gbq is not installed; cannot load BigQuery fixings")
+
+    query = """
+    SELECT *
+    FROM `flex-power.sales.origination_fixings`
+    """
+
+    df = pandas_gbq.read_gbq(query, project_id=project_id)
+    if "Tenor" in df.columns:
+        df["Tenor"] = df["Tenor"].astype(str)
+    print(f"✅ Loaded {len(df)} fixing records from BigQuery")
     return df
 
 
 def load_day_ahead_prices(path: str) -> pd.DataFrame:
-    """Load day-ahead prices and convert to Berlin timezone"""
+    """Load day-ahead prices and convert to Berlin timezone."""
+    if not path:
+        raise ValueError("DAY_AHEAD_PRICE_PATH is not set")
+    if BERLIN_TZ is None:
+        raise RuntimeError("pytz is required for timezone handling (BERLIN_TZ)")
 
     df = pd.read_csv(path)
-
     df["delivery_start__utc_"] = pd.to_datetime(df["delivery_start__utc_"], utc=True)
-
     df["time_berlin"] = df["delivery_start__utc_"].dt.tz_convert(BERLIN_TZ)
-
     df["naive_time"] = df["time_berlin"].dt.tz_localize(None)
-
-    # Group and average
-
     df_avg = df.groupby("naive_time", as_index=False)["dayaheadprice"].mean()
-
     df_avg = df_avg.rename(columns={"naive_time": "time_berlin"})
-
     df_avg = df_avg.drop_duplicates(subset=["time_berlin", "dayaheadprice"])
-
     print(f"✅ Loaded {len(df_avg)} day-ahead price records")
-
     return df_avg
 
 
 def load_rmv_prices(path: str) -> pd.DataFrame:
-    """Load RMV prices"""
-
+    """Load RMV prices."""
+    if not path:
+        raise ValueError("RMV_PRICE_PATH is not set")
     df = pd.read_csv(path)
-
-    df["tech"] = df["tech"].str.strip().str.upper().astype("category")
-
+    if "tech" in df.columns:
+        df["tech"] = df["tech"].str.strip().str.upper().astype("category")
     print(f"✅ Loaded {len(df)} RMV price records")
-
     return df
 
 
-# =============================================================================
-
-# EEG CATEGORY ASSIGNMENT
-
-# =============================================================================
-
-
 def set_category_based_on_conditions(df_assets: pd.DataFrame) -> pd.DataFrame:
-    """
-
-    Assign EEG rules and category based on technology, capacity, and commissioning date
-    Categories:
-
-    - PV_no_rules / PV_rules
-
-    - WIND_no_rules / WIND_rules
-
-    """
-
+    """Assign EEG rules and categories based on technology/capacity/commissioning date."""
     df = df_assets.copy()
 
-    # Parse commissioning date
+    if "INB" not in df.columns:
+        df["INB"] = np.nan
+    if "net_power_kw_unit" not in df.columns:
+        if "net_power_kw" in df.columns:
+            df["net_power_kw_unit"] = pd.to_numeric(df["net_power_kw"], errors="coerce")
+        else:
+            df["net_power_kw_unit"] = np.nan
+    if "tech" not in df.columns:
+        df["tech"] = np.nan
 
     df["INB_date"] = pd.to_datetime(df["INB"], dayfirst=True, errors="coerce")
-
     df["INB_year"] = df["INB_date"].dt.year
 
-    # Define EEG rule conditions
+    df["tech"] = df["tech"].astype(str).str.strip().str.upper()
 
     conditions = [
-        # Empty INB
-        df["INB"].isna() | (df["INB"] == ""),
-        # WIND >=3000 kW, 2016-2020
+        df["INB"].isna() | (df["INB"].astype(str).str.strip() == ""),
         (df["tech"] == "WIND")
         & (df["net_power_kw_unit"] >= 3000)
         & (df["INB_year"] >= 2016)
         & (df["INB_year"] < 2021),
-        # PV >=500 kW, 2016-2020
         (df["tech"] == "PV")
         & (df["net_power_kw_unit"] >= 500)
         & (df["INB_year"] >= 2016)
         & (df["INB_year"] < 2021),
-        # >=500 kW, 2021-2022
         (df["net_power_kw_unit"] >= 500)
         & (df["INB_year"] >= 2021)
         & (df["INB_year"] < 2023),
-        # >=100 kW, >=2023
         (df["net_power_kw_unit"] >= 100) & (df["INB_year"] >= 2023),
     ]
-
     choices = ["rules", "6h rules", "6h rules", "4h rules", "4_3_2_1 rules"]
-
     df["EEG"] = np.select(conditions, choices, default="no rules")
-
-    df = df.drop(columns=["INB_date", "INB_year"])
-
-    # Set category
+    df = df.drop(columns=["INB_date", "INB_year"], errors="ignore")
 
     df["category"] = df.apply(
         lambda row: (
@@ -463,48 +1903,35 @@ def set_category_based_on_conditions(df_assets: pd.DataFrame) -> pd.DataFrame:
         ),
         axis=1,
     )
-
     print("✅ EEG categories assigned")
-
     return df
-
-
-# =============================================================================
-
-# FIXING VALUES EXTRACTION
-
-# =============================================================================
 
 
 def get_fix_value(
     df_fixings: pd.DataFrame, tech: str, variable: str, year: str
 ) -> float:
-    """Extract single fixing value for technology, variable, and year"""
-
+    """Extract a single fixing value for technology/variable/year."""
     sel = df_fixings[
         (df_fixings["Technology"] == tech)
         & (df_fixings["Variable"] == variable)
-        & (df_fixings["Tenor"] == year)
+        & (df_fixings["Tenor"].astype(str) == str(year))
     ]
 
-    # Prefer non-zero new_Fixing, else EUR_MWh
+    if "new_Fixing" in sel.columns:
+        s_new = sel["new_Fixing"].replace(0, np.nan).dropna()
+        if not s_new.empty:
+            return float(s_new.iloc[0])
 
-    s_new = sel["new_Fixing"].replace(0, np.nan).dropna()
-
-    if not s_new.empty:
-
-        return float(s_new.iloc[0])
-
-    s_eur = sel["EUR_MWh"].dropna()
-
+    s_eur = (
+        sel["EUR_MWh"].dropna() if "EUR_MWh" in sel.columns else pd.Series(dtype=float)
+    )
     return float(s_eur.iloc[0]) if not s_eur.empty else np.nan
 
 
 def extract_all_fixings(
     df_fixings: pd.DataFrame, year: str = "2026"
 ) -> Dict[str, float]:
-    """Extract all required fixing values for a given year"""
-
+    """Extract all required fixing values for a given year."""
     fixings = {
         "bc_pv": get_fix_value(df_fixings, "PV", "Balancing Cost", year),
         "bc_wind": get_fix_value(df_fixings, "Wind", "Balancing Cost", year),
@@ -523,725 +1950,105 @@ def extract_all_fixings(
             df_fixings, "Wind", "Curtailment Value with any Rule", year
         ),
     }
-
-    # Validate
-
-    for name, value in fixings.items():
-
-        if np.isnan(value):
-
-            print(f"⚠️ Warning: {name} was not successfully fetched")
-
-        else:
-
-            print(f"✅ {name}: {value}")
-
     return fixings
 
 
 def apply_fixings_to_stammdaten(
     df_stamm: pd.DataFrame, fixings: Dict[str, float]
 ) -> pd.DataFrame:
-    """Apply fixing values to stammdaten DataFrame"""
-
+    """Apply fixing values to stammdaten DataFrame."""
     df = df_stamm.copy()
 
-    # Create masks
+    if "tech" not in df.columns:
+        df["tech"] = np.nan
+    if "EEG" not in df.columns:
+        df["EEG"] = "no rules"
+    if "net_power_kw_unit" not in df.columns:
+        if "net_power_kw" in df.columns:
+            df["net_power_kw_unit"] = pd.to_numeric(df["net_power_kw"], errors="coerce")
+        else:
+            df["net_power_kw_unit"] = np.nan
 
-    m_pv = df["tech"].str.upper().eq("PV")
+    m_pv = df["tech"].astype(str).str.upper().eq("PV")
+    m_wind = df["tech"].astype(str).str.upper().eq("WIND")
+    m_no = df["EEG"].astype(str).str.contains("no rules", case=False, na=False)
 
-    m_wind = df["tech"].str.upper().eq("WIND")
+    df.loc[m_pv, "Balancing Cost"] = fixings.get("bc_pv")
+    df.loc[m_wind, "Balancing Cost"] = fixings.get("bc_wind")
+    df.loc[m_pv, "Trading Convenience"] = fixings.get("tc_pv")
+    df.loc[m_wind, "Trading Convenience"] = fixings.get("tc_wind")
 
-    m_no = df["EEG"].str.contains("no rules", case=False, na=False)
+    df.loc[m_pv & m_no, "Curtailment Value"] = fixings.get("cv_pv_no")
+    df.loc[m_pv & ~m_no, "Curtailment Value"] = fixings.get("cv_pv_yes")
+    df.loc[m_wind & m_no, "Curtailment Value"] = fixings.get("cv_w_no")
+    df.loc[m_wind & ~m_no, "Curtailment Value"] = fixings.get("cv_w_yes")
 
-    # Assign balancing cost
-
-    df.loc[m_pv, "Balancing Cost"] = fixings["bc_pv"]
-
-    df.loc[m_wind, "Balancing Cost"] = fixings["bc_wind"]
-
-    # Assign trading convenience
-
-    df.loc[m_pv, "Trading Convenience"] = fixings["tc_pv"]
-
-    df.loc[m_wind, "Trading Convenience"] = fixings["tc_wind"]
-
-    # Assign curtailment value
-
-    df.loc[m_pv & m_no, "Curtailment Value"] = fixings["cv_pv_no"]
-
-    df.loc[m_pv & ~m_no, "Curtailment Value"] = fixings["cv_pv_yes"]
-
-    df.loc[m_wind & m_no, "Curtailment Value"] = fixings["cv_w_no"]
-
-    df.loc[m_wind & ~m_no, "Curtailment Value"] = fixings["cv_w_yes"]
-
-    # Calculate weighted curtailment value per malo
-
-    df_curt = (
-        df.groupby(["malo"], dropna=False)
-        .agg(
-            Curtailment_value_weighted=(
-                "Curtailment Value",
-                lambda x: np.average(x, weights=df.loc[x.index, "net_power_kw_unit"]),
+    if "malo" in df.columns:
+        df_curt = (
+            df.groupby(["malo"], dropna=False)
+            .agg(
+                Curtailment_value_weighted=(
+                    "Curtailment Value",
+                    lambda x: (
+                        np.average(
+                            x,
+                            weights=pd.to_numeric(
+                                df.loc[x.index, "net_power_kw_unit"], errors="coerce"
+                            ),
+                        )
+                        if len(x)
+                        and pd.to_numeric(
+                            df.loc[x.index, "net_power_kw_unit"], errors="coerce"
+                        )
+                        .notna()
+                        .any()
+                        else np.nan
+                    ),
+                )
             )
+            .reset_index()
         )
-        .reset_index()
-    )
-
-    df = pd.merge(df, df_curt, on="malo", how="left")
+        df = pd.merge(df, df_curt, on="malo", how="left")
 
     print("✅ Fixings applied to stammdaten")
-
     return df
-
-
-# =============================================================================
-
-# TURBINE MATCHING (FUZZY)
-
-# =============================================================================
-
-
-def clean_manufacturer_name(name: str) -> str:
-    """Clean manufacturer name by removing common suffixes"""
-
-    if not name or pd.isna(name):
-
-        return ""
-
-    name = str(name).strip()
-
-    # Remove phrases in order from longest to shortest to avoid partial matches
-
-    remove_phrases = [
-        "gmbh & co. kg",
-        "central europe",
-        "deutschland gmbh",
-        "energy gmbh",
-        "deutschland",
-        "gmbh",
-        "se",
-        "energy",
-        "ag",
-    ]
-
-    for phrase in remove_phrases:
-
-        # Use word boundaries to avoid removing partial words
-
-        pattern = r"\b" + re.escape(phrase) + r"\b"
-
-        name = re.sub(pattern, "", name, flags=re.IGNORECASE)
-
-    # Normalize multiple spaces to single space
-
-    name = re.sub(r"\s+", " ", name)
-
-    # Normalize manufacturer aliases
-
-    name_lower = name.lower().strip()
-
-    if "ge wind" in name_lower or "ge energy" in name_lower:
-
-        name = "ge"
-
-    elif "neg micon" in name_lower:
-
-        name = "nm"
-
-    elif "repower" in name_lower:
-
-        name = "repower"
-
-    return name.strip().lower()
-
-
-def clean_turbine_model(name: str) -> str:
-    """Clean turbine model name"""
-
-    if not isinstance(name, str) or not name or pd.isna(name):
-
-        return ""
-
-    name = str(name).strip()
-
-    # Remove manufacturer-specific prefixes (order matters: longest first)
-
-    remove_prefixes = [
-        "mit serrations",
-        "delta 4000",
-        "delta4000",
-        "neg micon",
-        "senvion",
-        "enercon",
-        "nercon",
-        "vensys",
-        "vestas",
-        "nordex",
-        "repower",
-        "siemens",
-    ]
-
-    for prefix in remove_prefixes:
-
-        pattern = r"\b" + re.escape(prefix) + r"\b"
-
-        name = re.sub(pattern, "", name, flags=re.IGNORECASE)
-
-    # Convert European decimal format (comma) to dot in numbers
-
-    name = re.sub(r"(\d),(\d)", r"\1.\2", name)
-
-    # Remove common suffixes
-
-    suffixes_to_remove = ["turbine", "wind"]
-
-    for suffix in suffixes_to_remove:
-
-        pattern = r"\b" + re.escape(suffix) + r"\b"
-
-        name = re.sub(pattern, "", name, flags=re.IGNORECASE)
-
-    # Remove leading/trailing dashes and spaces
-
-    name = name.strip("- ").strip()
-
-    return name
-
-
-def prepare_turbine_matching_dataframe(
-    df_turbines: pd.DataFrame, df_ref: pd.DataFrame, nan_path: Path, threshold: int = 76,
-) -> pd.DataFrame:
-    """
-
-    Prepare turbine DataFrame with fuzzy matching to reference database
-    Args:
-        df_turbines: DataFrame with turbine data
-        df_ref: Reference turbine database
-        threshold: Fuzzy matching threshold (0-100)
-    Returns:
-
-        DataFrame with matched turbine IDs
-
-    """
-
-    df = df_turbines.copy()
-    nan_path = Path(nan_path)
-    nan_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Clean names
-    df["clean_manufacturer"] = df["manufacturer"].apply(clean_manufacturer_name)
-    df["turbine_model_clean"] = df["turbine_model"].apply(clean_turbine_model)
-    df["add_turbine"] = df["turbine_model"]
-    df["net_power_mw"] = df["net_power_kw"] / 1000
-
-    # Build turbine string based on manufacturer
-    vestas_senvion_enercon = [
-        "Vestas Deutschland GmbH",
-        "Senvion Deutschland GmbH",
-        "ENERCON GmbH",
-        "VENSYS Energy AG",
-        "Enron Wind GmbH",
-        "NEG Micon Deutschland GmbH",
-    ]
-
-    nordex_repower = [
-        "Nordex Energy GmbH",
-        "REpower Systems SE",
-        "Nordex Germany GmbH",
-        "eno energy GmbH",
-    ]
-
-    df.loc[df["manufacturer"].isin(vestas_senvion_enercon), "add_turbine"] = (
-        df["turbine_model_clean"].astype(str).str.strip()
-        + " "
-        + df["net_power_mw"].round(3).astype(str)
-        + "MW"
-    )
-
-    df.loc[df["manufacturer"].isin(nordex_repower), "add_turbine"] = (
-        df["turbine_model_clean"].astype(str).str.strip()
-        + " "
-        + df["net_power_kw"].astype(str)
-    )
-
-    df.loc[df["manufacturer"].isin(["REpower Systems SE"]), "add_turbine"] = (
-        df["turbine_model_clean"].astype(str).str.strip()
-        + " "
-        + df["hub_height_m"].astype(str)
-    )
-
-    # Prepare reference data with power ratings (rated_power is in kW)
-    name_to_power = {}
-    if "rated_power" in df_ref.columns:
-        name_to_power = df_ref.set_index("name")["rated_power"].to_dict()
-
-    # Prepare hardcoded map keys for fuzzy matching
-    hardcoded_keys = list(TURBINE_HARDCODED_MAP.keys())
-
-    # Multi-stage fuzzy matching with power-aware scoring
-
-    def match_with_hardcoded(row):
-        # Stage 1: Exact match in hardcoded map (original model name)
-
-        if row["turbine_model"] in TURBINE_HARDCODED_MAP:
-            return TURBINE_HARDCODED_MAP[row["turbine_model"]]
-
-        # Stage 2: Exact match in hardcoded map (constructed name)
-
-        if row["add_turbine"] in TURBINE_HARDCODED_MAP:
-            return TURBINE_HARDCODED_MAP[row["add_turbine"]]
-
-        if row["turbine_model_clean"] in TURBINE_HARDCODED_MAP:
-            return TURBINE_HARDCODED_MAP[row["add_turbine"]]
-
-        # Stage 3: Fuzzy match against df_ref with power-aware scoring
-
-        if isinstance(row["add_turbine"], str) and row["add_turbine"].strip():
-            ref_names = df_ref["name"].dropna().unique()
-
-            # Get all candidates above threshold
-            matches = process.extract(
-                row["add_turbine"], ref_names, scorer=fuzz.token_set_ratio, limit=10
-            )
-
-            # Calculate combined score (name + power similarity)
-
-            best_match = None
-            best_combined_score = 0
-
-            for match_name, name_score in matches:
-
-                if name_score >= threshold - 10:  # Lower threshold for consideration
-                    combined_score = name_score
-
-                    # Add power similarity bonus if power data available
-
-                    if name_to_power and match_name in name_to_power:
-                        ref_power_kw = name_to_power[match_name]
-                        turbine_power_kw = row["net_power_kw"]
-
-                        if ref_power_kw and turbine_power_kw:
-                            # Calculate power similarity score
-                            power_diff_pct = (
-                                abs(ref_power_kw - turbine_power_kw)
-                                / turbine_power_kw
-                                * 100
-                            )
-
-                            # Power bonus: 0-30 points based on similarity
-
-                            # 0% diff = +30 points, 10% diff = +20 points, 20%
-                            # diff = +10 points, >20% = 0 points
-
-                            if power_diff_pct <= 5:
-                                power_bonus = 30
-                            elif power_diff_pct <= 10:
-                                power_bonus = 20
-                            elif power_diff_pct <= 20:
-                                power_bonus = 10
-                            else:
-                                power_bonus = 0
-
-                            combined_score = name_score + power_bonus
-
-                    # Update best match if this combined score is higher
-
-                    if combined_score > best_combined_score:
-                        best_combined_score = combined_score
-                        best_match = match_name
-
-            # Return best match if combined score meets threshold
-
-            if best_match and best_combined_score >= threshold:
-                return best_match
-
-        # Stage 4: Fuzzy match against hardcoded map keys (fallback)
-        if isinstance(row["add_turbine"], str) and row["add_turbine"].strip():
-
-            # Try constructed name
-            match_key, score = process.extractOne(
-                row["add_turbine"], hardcoded_keys, scorer=fuzz.token_set_ratio
-            )
-
-            if score >= threshold:
-                return TURBINE_HARDCODED_MAP[match_key]
-
-            # Try original model name
-            match_key_orig, score_orig = process.extractOne(
-                row["turbine_model"], hardcoded_keys, scorer=fuzz.token_set_ratio
-            )
-
-            if score_orig >= threshold:
-                return TURBINE_HARDCODED_MAP[match_key_orig]
-
-        return None
-
-    df["Matched_Turbine_Name"] = df.apply(match_with_hardcoded, axis=1)
-
-    # Map to ID
-    name_to_id = df_ref.set_index("name")["id"].to_dict()
-
-    df["Matched_Turbine_ID"] = df["Matched_Turbine_Name"].map(name_to_id)
-
-    df.to_excel(nan_path, index=False)
-    print(f"🎐🎐 nan turbine id enervis saved to {nan_path}")
-
-    # Clean up and notif
-    matched_count = df["Matched_Turbine_ID"].notna().sum()
-    print(f"✅ Matched {matched_count}/{len(df)} turbines to reference database")
-
-    return df
-
-
-# =============================================================================
-
-# API CLIENTS
-
-# =============================================================================
-
-
-class BlindleisterAPI:
-    """Client for Blindleister API"""
-
-    BASE_URL = "https://api.blindleister.de"
-
-    def __init__(self, email: str, password: str):
-        self.email = email
-        self.password = password
-        self.token = None
-
-    def get_token(self) -> str:
-        """Get access token"""
-
-        headers = {"accept": "text/plain", "Content-Type": "application/json"}
-        json_data = {"email": self.email, "password": self.password}
-
-        response = requests.post(
-            f"{self.BASE_URL}/api/v1/authentication/get-access-token",
-            headers=headers,
-            json=json_data,
-        )
-
-        if response.status_code != 200:
-
-            raise Exception(f"Failed to get Blindleister token: {response.status_code}")
-
-        self.token = response.text.strip('"')
-        print("✅ Blindleister token obtained")
-
-        return self.token
-
-    def get_market_prices(self, site_ids: List[str], years: List[int]) -> pd.DataFrame:
-        """Fetch market prices for multiple sites and years"""
-
-        if not self.token:
-            self.get_token()
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.token}",
-        }
-
-        records = []
-
-        for site_id in site_ids:
-
-            print(f"Fetching market prices for {site_id}...")
-
-            for year in years:
-
-                payload = {"ids": [site_id], "year": year}
-
-                response = requests.post(
-                    f"{self.BASE_URL}/api/v1/market-price-atlas-api/get-market-price",
-                    headers=headers,
-                    json=payload,
-                )
-
-                if response.status_code != 200:
-
-                    print(f"⚠️ Failed for {site_id}, {year}: {response.status_code}")
-
-                    continue
-
-                try:
-
-                    result = response.json()
-
-                    for entry in result:
-
-                        entry["year"] = year
-
-                        records.append(entry)
-
-                except Exception as e:
-
-                    print(f"⚠️ Error parsing response for {site_id}, {year}: {e}")
-
-        if not records:
-
-            return pd.DataFrame()
-
-        # Flatten JSON
-
-        df = pd.json_normalize(
-            records,
-            record_path="months",
-            meta=[
-                "year",
-                "unit_mastr_id",
-                "gross_power_kw",
-                "energy_source",
-                "annual_generated_energy_mwh",
-                "benchmark_market_price_eur_mwh",
-            ],
-            errors="ignore",
-        )
-
-        print(f"✅ Fetched {len(df)} market price records from Blindleister")
-
-        return df
-
-
-class AnemosAPI:
-    """Client for Anemos (Enervis) API"""
-
-    BASE_URL = "https://api.anemosgmbh.com"
-
-    AUTH_URL = (
-        "https://keycloak.anemosgmbh.com/auth/realms/awis/protocol/openid-connect/token"
-    )
-
-    def __init__(self, email: str, password: str):
-
-        self.email = email
-
-        self.password = password
-
-        self.token = None
-
-    def get_token(self) -> str:
-        """Get access token"""
-
-        data = {
-            "client_id": "webtool_vue",
-            "grant_type": "password",
-            "username": self.email,
-            "password": self.password,
-        }
-
-        response = requests.post(self.AUTH_URL, data=data)
-
-        response.raise_for_status()
-
-        self.token = response.json()["access_token"]
-
-        print("✅ Anemos token obtained")
-
-        return self.token
-
-    def get_historical_product_id(self) -> int:
-        """Get hist-ondemand product ID"""
-
-        if not self.token:
-
-            self.get_token()
-
-        headers = {"Authorization": f"Bearer {self.token}"}
-
-        response = requests.get(f"{self.BASE_URL}/products_mva", headers=headers)
-
-        response.raise_for_status()
-
-        products = response.json()
-
-        for p in products:
-
-            if "hist-ondemand" in p["mva_product_type"]["name"].lower():
-
-                print(f"✅ Found hist-ondemand product ID: {p['id']}")
-
-                return p["id"]
-
-        raise Exception("hist-ondemand product not found")
-
-    def start_job(self, product_id: int, parkinfo: List[Dict]) -> Optional[str]:
-        """Start historical job"""
-
-        if not parkinfo:
-
-            print("⚠️ No parkinfo provided, skipping job")
-
-            return None
-
-        headers = {
-            "Authorization": f"Bearer {self.token}",
-            "Content-Type": "application/json",
-        }
-
-        payload = {"mva_product_id": product_id, "parameters": {"parkinfo": parkinfo}}
-
-        response = requests.post(f"{self.BASE_URL}/jobs", headers=headers, json=payload)
-
-        if response.status_code != 200:
-
-            print(f"❌ Job start failed: {response.text}")
-
-            response.raise_for_status()
-
-        job_uuid = response.json()["uuid"]
-
-        print(f"✅ Job started: {job_uuid}")
-
-        return job_uuid
-
-    def wait_for_job(self, job_uuid: str, poll_interval: int = 10) -> Dict:
-        """Poll job status until complete"""
-
-        url = f"{self.BASE_URL}/jobs/{job_uuid}"
-
-        while True:
-
-            headers = {"Authorization": f"Bearer {self.token}"}
-
-            response = requests.get(url, headers=headers)
-
-            if response.status_code == 401:
-
-                print("Token expired, refreshing...")
-
-                self.get_token()
-
-                headers = {"Authorization": f"Bearer {self.token}"}
-
-                response = requests.get(url, headers=headers)
-
-            response.raise_for_status()
-
-            job_info = response.json()
-
-            if isinstance(job_info, list):
-
-                job_info = job_info[0]
-
-            status = job_info.get("status")
-
-            print(f"Job status: {status}")
-
-            if status in ["DONE", "COMPLETED"]:
-
-                return job_info
-
-            elif status in ["FAILED", "CANCELED"]:
-
-                raise Exception(f"Job ended with status: {status}")
-
-            time.sleep(poll_interval)
-
-    def extract_results(self, job_info: Dict) -> List[pd.DataFrame]:
-        """Extract results from job info"""
-
-        results = job_info.get("info", {}).get("results", [])
-
-        if not results:
-
-            print("❌ No results found in job")
-
-            return []
-
-        dfs = []
-
-        for result in results:
-
-            turbine_id = result.get("id")
-
-            year_data = result.get("Marktwertdifferenzen")
-
-            if year_data:
-
-                df = pd.DataFrame.from_dict(
-                    year_data, orient="index", columns=["Marktwertdifferenz"]
-                )
-
-                df.index.name = "Year"
-
-                df = df.reset_index()
-
-                df["id"] = turbine_id
-
-                dfs.append(df)
-
-        print(f"✅ Extracted {len(dfs)} result DataFrames")
-
-        return dfs
-
-
-# =============================================================================
-
-# PRODUCTION DATA PROCESSING
-
-# =============================================================================
 
 
 def process_time_column(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Process time column - handle both time_berlin and time_utc
-    """
-
+    """Process time column - handle both time_berlin and time_utc."""
     df_result = df.copy()
-
     if "time_berlin" in df_result.columns:
         df_result["time_berlin"] = pd.to_datetime(
-            df_result["time_berlin"], dayfirst=True, errors="coerce"
+            df_result["time_berlin"], errors="coerce"
         )
-        df_result["time_berlin"] = df_result["time_berlin"].dt.tz_localize(None)
-        print("🥯 Processed time_berlin column")
-
     elif "time_utc" in df_result.columns:
         df_result["time_utc"] = pd.to_datetime(
-            df_result["time_utc"], errors="coerce", dayfirst=True, utc=True
+            df_result["time_utc"], errors="coerce", utc=True
         )
+        if BERLIN_TZ is None:
+            raise RuntimeError("pytz is required for timezone conversion")
         df_result["time_berlin"] = (
             df_result["time_utc"].dt.tz_convert(BERLIN_TZ).dt.tz_localize(None)
         )
-        df_result = df_result.drop(columns="time_utc")
-        print("🥯🥯 Converted time_utc to time_berlin")
-
+        df_result.drop(columns=["time_utc"], inplace=True)
     else:
-        print("⚠️ No time column found")
-
+        raise ValueError("No time_berlin or time_utc column found")
     return df_result
 
 
 def expand_hourly_to_quarter_hourly(
     df: pd.DataFrame, cutoff_date: str = CUTOFF_DATE_HOURLY
 ) -> pd.DataFrame:
-    """
-
-    Expand hourly data to quarter-hourly before cutoff date
-
-    Leave data after cutoff unchanged
-
-    """
-
+    """Expand hourly data to quarter-hourly before cutoff date; keep later data unchanged."""
     df_indexed = df.set_index("time_berlin")
-
     cutoff = pd.to_datetime(cutoff_date)
-
     hourly_data = df_indexed[df_indexed.index < cutoff]
-
     quarter_hourly_data = df_indexed[df_indexed.index >= cutoff]
 
     if not hourly_data.empty:
-
-        hourly_expanded = hourly_data.resample("15T").ffill()
-
-        result = pd.concat([hourly_expanded, quarter_hourly_data])
-
+        hourly_data = hourly_data.resample("15T").ffill()
+        result = pd.concat([hourly_data, quarter_hourly_data])
     else:
-
         result = quarter_hourly_data
 
     return result.sort_index().reset_index()
@@ -1251,410 +2058,275 @@ def filter_production_data_by_completeness(
     df: pd.DataFrame,
     rows_per_full_year: int = ROWS_PER_FULL_YEAR,
     min_rows_per_month: int = 2592,
+    debug: Optional[bool] = None,
 ) -> pd.DataFrame:
+    """Filter production data to keep only complete/continuous periods.
+
+    - Only consider years 2021, 2023, 2024, 2025
+    - Keep only "valid" months with at least `min_rows_per_month` rows
+    - If a malo has (enough) full-year data, keep only full years
+    - Otherwise, prefer the most recent continuous 12/24/36-month window
+    - Output includes `available_years` and `available_months`
     """
 
-    Filter production data to keep only complete/continuous periods
-    Logic:
+    if debug is None:
+        debug = os.getenv("PROD_FILTER_DEBUG", "0").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
-    - Keep full years if available (>=35000 rows/year)
+    if df is None or df.empty:
+        return pd.DataFrame()
 
-    - Otherwise find longest continuous period (12/24/36 months)
+    required_cols = {"malo", "time_berlin"}
+    missing = required_cols - set(df.columns)
+    if missing:
+        raise ValueError(
+            f"Missing required columns for production filtering: {sorted(missing)}"
+        )
 
-    - Keep only months with >=2592 rows (27 days)
+    df_filtered = df.copy()
+    df_filtered["malo"] = df_filtered["malo"].astype(str).str.strip()
+    df_filtered["time_berlin"] = pd.to_datetime(
+        df_filtered["time_berlin"], errors="coerce"
+    )
+    df_filtered = df_filtered.dropna(subset=["malo", "time_berlin"]).copy()
 
-    """
+    target_years = [2021, 2023, 2024, 2025, 2026]
+    df_filtered = df_filtered[
+        df_filtered["time_berlin"].dt.year.isin(target_years)
+    ].copy()
 
-    df_filtered = df[df["time_berlin"].dt.year.isin([2021, 2023, 2024, 2025])].copy()
+    if df_filtered.empty:
+        return pd.DataFrame()
 
-    filtered_data = []
+    def _most_recent_continuous_period(
+        months_sorted: List[pd.Period],
+        period_lengths: List[int] = [12, 24, 36, 48, 60],
+    ) -> Optional[List[pd.Period]]:
+        if not months_sorted:
+            return None
+
+        month_set = set(months_sorted)
+        continuous_periods: List[List[pd.Period]] = []
+
+        for period_length in period_lengths:
+            if len(months_sorted) < period_length:
+                continue
+
+            for i in range(len(months_sorted) - period_length + 1):
+                start_month = months_sorted[i]
+                candidate = [start_month + j for j in range(period_length)]
+                if all(m in month_set for m in candidate):
+                    continuous_periods.append(candidate)
+
+        if not continuous_periods:
+            return None
+
+        # Prefer the MOST RECENT continuous period (largest start month)
+        return max(continuous_periods, key=lambda period: period[0])
+
+    filtered_groups: List[pd.DataFrame] = []
 
     for malo, group in df_filtered.groupby("malo"):
+        group_filtered = group.sort_values("time_berlin").copy()
 
-        group_filtered = group[
-            group["time_berlin"].dt.year.isin([2021, 2023, 2024, 2025])
-        ]
-
+        # Legacy: determine full years based on raw row counts (before month-valid filtering)
         rows_per_year = group_filtered.groupby(
             group_filtered["time_berlin"].dt.year
         ).size()
+        years_in_data = group_filtered["time_berlin"].dt.year.unique().tolist()
 
-        counting_month = group_filtered.groupby(
-            group_filtered["time_berlin"].dt.to_period("M")
-        ).size()
+        # Apply month validity filtering (>= min_rows_per_month) like legacy
+        group_filtered["month"] = group_filtered["time_berlin"].dt.to_period("M")
+        month_counts = group_filtered.groupby("month").size()
+        valid_months = month_counts[month_counts >= min_rows_per_month].index
+        group_valid_months = group_filtered[
+            group_filtered["month"].isin(valid_months)
+        ].copy()
 
-        years_in_data = group_filtered["time_berlin"].dt.year.unique()
-
-        valid_months = counting_month[counting_month >= min_rows_per_month].index
-
-        group_valid = group_filtered[
-            group_filtered["time_berlin"].dt.to_period("M").isin(valid_months)
-        ]
-
-        filtered_group = None
-
-        # Single year - keep all
+        filtered_group: Optional[pd.DataFrame] = None
+        category = ""
 
         if len(years_in_data) == 1:
-            print(f"🥑 Malo {malo}: 1 year only, keeping all")
-            filtered_group = group_valid
+            # Keep all valid months
+            filtered_group = group_valid_months
+            category = "single_year_keep_valid_months"
 
-        # Multiple years with at least one full year
-
-        elif len(years_in_data) > 2 and any(
-            rows_per_year[rows_per_year.index.isin(years_in_data)] >= rows_per_full_year
+        elif (
+            len(years_in_data) >= 2
+            and not rows_per_year.empty
+            and (rows_per_year >= rows_per_full_year).any()
         ):
-
-            full_years = rows_per_year[
+            # Keep only the full years, but still restricted to valid months
+            full_years_available = rows_per_year[
                 rows_per_year >= rows_per_full_year
             ].index.tolist()
-
-            print(f"🥑🥑 Malo {malo}: Full years available: {full_years}")
-
-            filtered_group = group_valid[
-                group_valid["time_berlin"].dt.year.isin(full_years)
-            ]
-
-        # Find continuous periods
-        else:
-            unique_months_sorted = sorted(
-                group_valid["time_berlin"].dt.to_period("M").unique()
+            filtered_group = group_valid_months[
+                group_valid_months["time_berlin"].dt.year.isin(full_years_available)
+            ].copy()
+            category = (
+                f"full_years_only({','.join(map(str, sorted(full_years_available)))})"
             )
 
-            continuous_periods = []
+        elif len(years_in_data) >= 2:
+            # Choose most recent continuous window (12/24/36 months) among valid months
+            months_sorted = sorted(group_valid_months["month"].unique().tolist())
+            chosen_period = _most_recent_continuous_period(months_sorted)
 
-            for period_length in [12, 24, 36, 48]:
-                for i in range(len(unique_months_sorted) - period_length + 1):
-                    start_month = unique_months_sorted[i]
-                    if all(
-                        (start_month + j) in unique_months_sorted
-                        for j in range(period_length)
-                    ):
-
-                        continuous_periods.append(
-                            [start_month + j for j in range(period_length)]
-                        )
-
-            if continuous_periods:
-                most_recent = max(continuous_periods, key=lambda x: x[0])
-                print(
-                    f"🥑🥑🥑 Malo {malo}: Using 12/24/36/48 continuous period {most_recent[0]} to {most_recent[-1]}"
-                )
-
-                filtered_group = group_valid[
-                    group_valid["time_berlin"].dt.to_period("M").isin(most_recent)
-                ]
-
+            if chosen_period:
+                filtered_group = group_valid_months[
+                    group_valid_months["month"].isin(chosen_period)
+                ].copy()
+                category = f"continuous_period({len(chosen_period)}m:{chosen_period[0]}→{chosen_period[-1]})"
             else:
-                print(f"⚠️ Malo {malo}: No continuous periods, keeping all valid months")
-                filtered_group = group_valid
+                filtered_group = group_valid_months
+                category = "no_continuous_period_keep_valid_months"
 
-        if filtered_group is not None and not filtered_group.empty:
-            available_years = filtered_group["time_berlin"].dt.year.unique().tolist()
-            filtered_group = filtered_group.copy()
-            filtered_group["available_years"] = ", ".join(map(str, available_years))
-            filtered_data.append(filtered_group)
+        else:
+            filtered_group = group_valid_months
+            category = "fallback_keep_valid_months"
 
-    if filtered_data:
-        df_result = pd.concat(filtered_data, ignore_index=True)
+        if debug:
+            rows_per_year_str = (
+                ", ".join(
+                    f"{int(y)}:{int(c)}" for y, c in sorted(rows_per_year.items())
+                )
+                if not rows_per_year.empty
+                else ""
+            )
+            valid_months_count = (
+                int(group_valid_months["month"].nunique())
+                if not group_valid_months.empty
+                else 0
+            )
+            print(
+                f"malo: {malo} | category: {category} | rows_per_year: [{rows_per_year_str}] | valid_months: {valid_months_count}"
+            )
 
-        # Add available_months column
-        df_result["month"] = df_result["time_berlin"].dt.to_period("M")
+        if filtered_group is None or filtered_group.empty:
+            continue
 
-        month_counts = (
-            df_result.groupby("malo")["month"]
-            .nunique()
-            .reset_index(name="available_months")
+        # Match legacy formatting: years in chronological order if time-sorted
+        available_years = (
+            filtered_group.sort_values("time_berlin")["time_berlin"]
+            .dt.year.unique()
+            .tolist()
         )
+        filtered_group = filtered_group.copy()
+        filtered_group["available_years"] = ", ".join(map(str, available_years))
 
-        df_result = df_result.merge(month_counts, on="malo", how="left")
+        filtered_group.drop(columns=["month"], inplace=True, errors="ignore")
+        filtered_groups.append(filtered_group)
 
-        df_result.drop(columns="month", inplace=True)
-
-        print(
-            f"✅ Filtered production data: {len(df_result)} rows, {df_result['malo'].nunique()} malos"
-        )
-
-        return df_result
-
-    else:
-        print("❌ No data remained after filtering")
+    if not filtered_groups:
         return pd.DataFrame()
 
+    df_result = pd.concat(filtered_groups, ignore_index=True)
 
-# =============================================================================
+    # Match legacy: compute available_months per malo across the concatenated output
+    df_result["month"] = df_result["time_berlin"].dt.to_period("M")
+    month_counts = (
+        df_result.groupby("malo")["month"]
+        .nunique()
+        .reset_index(name="available_months")
+    )
+    df_result = df_result.merge(month_counts, on="malo", how="left")
+    df_result.drop(columns=["month"], inplace=True)
 
-# EXCEL OUTPUT
-
-# =============================================================================
+    print(
+        f"✅ Filtered production data: {len(df_result)} rows, {df_result['malo'].nunique()} malos"
+    )
+    return df_result
 
 
 def save_multisheet_excel(df: pd.DataFrame, path: str, max_rows: int = EXCEL_MAX_ROWS):
-    """Save large DataFrame to Excel with multiple sheets if needed"""
-
+    """Save large DataFrame to Excel with multiple sheets if needed."""
+    df = sanitize_for_excel(df)
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
-
-        for i in range(0, len(df), max_rows):
-            chunk = df.iloc[i : i + max_rows]
-            sheet_name = f"Sheet_{i//max_rows + 1}"
-            chunk.to_excel(writer, sheet_name=sheet_name, index=False)
-
+        if len(df) <= max_rows:
+            df.to_excel(writer, sheet_name="Sheet1", index=False, na_rep="")
+        else:
+            num_sheets = (len(df) // max_rows) + 1
+            for i in range(num_sheets):
+                start_row = i * max_rows
+                end_row = min((i + 1) * max_rows, len(df))
+                df.iloc[start_row:end_row].to_excel(
+                    writer,
+                    sheet_name=sanitize_sheet_name(f"Sheet{i+1}"),
+                    index=False,
+                    na_rep="",
+                )
     print(f"✅ Saved to {path}")
 
 
 def format_excel_output(file_path: str):
-    """Apply formatting to Excel output: header highlighting, column widths"""
+    """Apply basic formatting to Excel output (header highlight, widths)."""
+    if load_workbook is None or PatternFill is None or Font is None:
+        print("ℹ️ openpyxl not available; skipping Excel formatting")
+        return
 
     wb = load_workbook(file_path)
-
     highlight_fill = PatternFill(
-        start_color="003366", end_color="003366", fill_type="solid"
+        start_color="020227", end_color="020227", fill_type="solid"
     )
 
     white_font = Font(color="FFFFFF")
 
     for sheet_name in wb.sheetnames:
-
-        sheet = wb[sheet_name]
-
-        # Highlight header
-
-        for cell in sheet[1]:
-
+        ws = wb[sheet_name]
+        for cell in ws[1]:
             cell.fill = highlight_fill
-
             cell.font = white_font
-
-        # Auto-width columns
-
-        for col in sheet.columns:
-
-            max_length = 0
-
-            column = col[0].column_letter
-
-            for cell in col:
-
-                try:
-
-                    if len(str(cell.value)) > max_length:
-
-                        max_length = len(cell.value)
-
-                except BaseException:
-
-                    pass
-
-            adjusted_width = max_length + 1
-
-            sheet.column_dimensions[column].width = adjusted_width
+        for col in ws.columns:
+            max_len = 0
+            col_letter = col[0].column_letter
+            for cell in col[:2000]:
+                if cell.value is not None:
+                    max_len = max(max_len, len(str(cell.value)))
+            ws.column_dimensions[col_letter].width = min(max(10, max_len + 2), 45)
 
     wb.save(file_path)
-
     print(f"✅ Formatted Excel: {file_path}")
 
 
-# =============================================================================
-
-# BLINDLEISTER DATA PROCESSING
-
-# =============================================================================
-
-
-def process_blindleister_market_prices(
-    df_flat: pd.DataFrame,
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """
-
-    Process Blindleister market prices to calculate weighted deltas
-    Returns:
-
-        Tuple of (yearly_pivot, weighted_average_per_malo)
-
-    """
-
-    # Calculate spot RMV delta blindleister
-
-    df_flat["spot_rmv_EUR_monthly_ytd"] = (
-        df_flat["monthly_generated_energy_mwh"]
-        * df_flat["monthly_market_price_eur_mwh"]
-    ) - (
-        df_flat["monthly_generated_energy_mwh"]
-        * df_flat["monthly_reference_market_price_eur_mwh"]
-    )
-
-    # Aggregate per malo per year
-
-    permalo_yearly = (
-        df_flat.groupby(["year", "unit_mastr_id"], dropna=False)
-        .agg(
-            spot_rmv_EUR_yearly=("spot_rmv_EUR_monthly_ytd", "sum"),
-            sum_prod_yearly=("monthly_generated_energy_mwh", "sum"),
-        )
-        .assign(blind_yearly=lambda x: x["spot_rmv_EUR_yearly"] / x["sum_prod_yearly"])
-        .reset_index()
-    )
-
-    # Aggregate across all years per malo
-
-    permalo_total = (
-        df_flat.groupby("unit_mastr_id", dropna=False)
-        .agg(
-            spot_rmv_EUR_ytd=("spot_rmv_EUR_monthly_ytd", "sum"),
-            sum_prod_ytd=("monthly_generated_energy_mwh", "sum"),
-        )
-        .assign(
-            average_weighted_eur_mwh_blindleister=lambda x: x["spot_rmv_EUR_ytd"]
-            / x["sum_prod_ytd"]
-        )
-        .reset_index()
-    )
-
-    # Pivot yearly data
-
-    weighted_years_pivot = permalo_yearly.pivot(
-        index="unit_mastr_id", columns="year", values="blind_yearly"
-    ).reset_index()
-
-    weighted_years_pivot.columns.name = None
-
-    weighted_years_pivot = weighted_years_pivot.rename(
-        columns={
-            2021: "weighted_2021_eur_mwh_blindleister",
-            2023: "weighted_2023_eur_mwh_blindleister",
-            2024: "weighted_2024_eur_mwh_blindleister",
-            2025: "weighted_2025_eur_mwh_blindleister",
-        }
-    )
-
-    # Round values
-
-    cols_to_round = [
-        "weighted_2021_eur_mwh_blindleister",
-        "weighted_2023_eur_mwh_blindleister",
-        "weighted_2024_eur_mwh_blindleister",
-        "weighted_2025_eur_mwh_blindleister",
-        "average_weighted_eur_mwh_blindleister",
-    ]
-
-    final_weighted = weighted_years_pivot.merge(
-        permalo_total[["unit_mastr_id", "average_weighted_eur_mwh_blindleister"]],
-        on="unit_mastr_id",
-        how="left",
-    )
-
-    final_weighted[cols_to_round] = final_weighted[cols_to_round].round(2)
-
-    print(f"✅ Processed Blindleister data for {len(final_weighted)} units")
-
-    return final_weighted
-
-
-def process_enervis_results(
-    dfs: List[pd.DataFrame], target_years: List[str] = ["2021", "2023", "2024","2025"]
-) -> pd.DataFrame:
-    """
-
-    Process Enervis API results to create pivot table with yearly averages
-    Args:
-
-        dfs: List of DataFrames from Enervis API
-
-        target_years: Years to include in pivot
-    Returns:
-
-        DataFrame with columns: id, 2021, 2023, 2024, 2025, avg_enervis
-
-    """
-
-    if not dfs:
-
-        return pd.DataFrame()
-
-    all_df = pd.concat(dfs, ignore_index=True)
-
-    all_df["Year"] = all_df["Year"].astype(str)
-
-    existing_years = all_df["Year"].unique().tolist()
-
-    valid_years = [y for y in target_years if y in existing_years]
-
-    if not valid_years:
-
-        print("⚠️ No target years found in Enervis data")
-
-        return pd.DataFrame()
-
-    # Filter to valid years
-
-    all_df = all_df[all_df["Year"].isin(valid_years)].copy()
-
-    # Keep minimum Marktwertdifferenz per (id, Year)
-
-    df_filtered = all_df.loc[
-        all_df.groupby(["id", "Year"])["Marktwertdifferenz"].idxmin()
-    ].copy()
-
-    df_filtered["Marktwertdifferenz"] = df_filtered["Marktwertdifferenz"].round(2)
-
-    # Pivot to wide format
-
-    df_pivot = (
-        df_filtered.pivot(index="id", columns="Year", values="Marktwertdifferenz")
-        .rename_axis(None, axis=1)
-        .reset_index()
-    )
-
-    # Ensure all year columns exist
-
-    for year in target_years:
-
-        if year not in df_pivot.columns:
-
-            df_pivot[year] = np.nan
-
-    # Calculate average
-
-    df_pivot["avg_enervis"] = df_pivot[target_years].mean(axis=1, skipna=True).round(2)
-
-    columns_to_keep = ["id"] + target_years + ["avg_enervis"]
-
-    df_result = df_pivot[columns_to_keep]
-
-    print(f"✅ Processed Enervis data for {len(df_result)} turbines")
-
-    return df_result
-
-
-# =============================================================================
-
-# AGGREGATION FUNCTIONS
-
-# =============================================================================
-
-
 def aggregate_stammdaten_by_malo(df: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate stammdaten data by malo"""
+    """Aggregate stammdaten-style data by malo (robust to missing columns)."""
+    df = df.copy()
+    if "net_power_kw_unit" not in df.columns:
+        if "net_power_kw" in df.columns:
+            df["net_power_kw_unit"] = pd.to_numeric(df["net_power_kw"], errors="coerce")
+        else:
+            df["net_power_kw_unit"] = np.nan
 
-    df["Power in MW"] = df["net_power_kw_unit"] / 1000
+    df["Power in MW"] = pd.to_numeric(df["net_power_kw_unit"], errors="coerce") / 1000
 
-    agg_dict = {
-        "unit_mastr_id": "first",
-        "Projekt": "first",
-        "tech": "first",
-        "Power in MW": "sum",
-        "INB": lambda x: [convert_date_or_keep_string(date) for date in x],
-        "EEG": lambda x: list(x.unique()),
-        "AW in EUR/MWh": lambda x: [
-            round(float(val), 2) for val in x if is_number(val)
-        ],
-        "Curtailment & redispatch included": "first",
-        "Balancing Cost": "first",
-        "Curtailment_value_weighted": "first",
-        "Trading Convenience": "first",
-    }
+    agg_dict: Dict[str, Any] = {}
+    for col in [
+        "unit_mastr_id",
+        "Projekt",
+        "tech",
+        "Curtailment & redispatch included",
+        "Balancing Cost",
+        "Curtailment_value_weighted",
+        "Trading Convenience",
+    ]:
+        if col in df.columns:
+            agg_dict[col] = "first"
 
-    # Add Blindleister columns if they exist
+    if "Power in MW" in df.columns:
+        agg_dict["Power in MW"] = "sum"
+
+    if "INB" in df.columns:
+        agg_dict["INB"] = lambda x: [convert_date_or_keep_string(date) for date in x]
+    if "EEG" in df.columns:
+        agg_dict["EEG"] = lambda x: list(pd.Series(x).dropna().astype(str).unique())
+    if "AW in EUR/MWh" in df.columns:
+        agg_dict["AW in EUR/MWh"] = lambda x: [
+            round(float(v), 2) for v in x if is_number(v)
+        ]
 
     blindleister_cols = [
         "weighted_2021_eur_mwh_blindleister",
@@ -1663,49 +2335,39 @@ def aggregate_stammdaten_by_malo(df: pd.DataFrame) -> pd.DataFrame:
         "weighted_2025_eur_mwh_blindleister",
         "average_weighted_eur_mwh_blindleister",
     ]
-
     for col in blindleister_cols:
-
         if col in df.columns:
-
             agg_dict[col] = "min"
 
+    enervis_cols = [f"enervis_{y}" for y in TARGET_YEARS] + ["avg_enervis"]
+    for col in enervis_cols:
+        if col in df.columns:
+            agg_dict[col] = "min"
+
+    if not agg_dict:
+        return df[["malo"]].drop_duplicates()
+
     df_agg = df.groupby(["malo"], dropna=False).agg(agg_dict).reset_index()
-
     print(f"✅ Aggregated {len(df_agg)} malos")
-
     return df_agg
 
 
-# =============================================================================
-
-# PRODUCTION METRICS + CURTAILMENT FORECASTING (ML)
-
-# =============================================================================
-
-
 def process_production_data(
-    merge_prod_rmv_dayahead: pd.DataFrame, folder: Any
+    merge_prod_rmv_dayahead: pd.DataFrame,
 ) -> Dict[str, pd.DataFrame]:
-    """Compute monthly aggregation, weighted delta per malo, and capacity inputs."""
-
+    """Compute weighted delta and year-agg capacity inputs from production + prices."""
     df = merge_prod_rmv_dayahead.copy()
 
-    #folder_path = Path(folder)
-
-    # input_df_name = "merge_prod_rmv_dayahead"
-    # folder_name = folder_path / f"{input_df_name}_forecast_output"
-    # folder_name.mkdir(parents=True, exist_ok=True)
-
-    df.rename(columns={"power_kwh": "production_kwh"}, inplace=True)
-
-    if "year" not in df.columns and "time_berlin" in df.columns:
-
-        df["year"] = pd.to_datetime(df["time_berlin"], errors="coerce").dt.year
-
-    if "month" not in df.columns and "time_berlin" in df.columns:
-
-        df["month"] = pd.to_datetime(df["time_berlin"], errors="coerce").dt.month
+    if "production_kwh" in df.columns:
+        df["production_kwh"] = pd.to_numeric(df["production_kwh"], errors="coerce")
+    elif "power_kwh_forecast" in df.columns:
+        df["production_kwh"] = pd.to_numeric(df["power_kwh_forecast"], errors="coerce")
+    elif "power_kwh" in df.columns:
+        df["production_kwh"] = pd.to_numeric(df["power_kwh"], errors="coerce")
+    else:
+        raise KeyError(
+            "Missing production column: expected one of 'production_kwh', 'power_kwh_forecast', or 'power_kwh'"
+        )
 
     df_dropdup = df.drop_duplicates(subset=["malo", "time_berlin", "production_kwh"])
 
@@ -1717,16 +2379,22 @@ def process_production_data(
         / 1000
     )
 
-    # try:
-    #     df_dropdup.sort_values("time_berlin").to_excel(
-    #         folder_path / "merge_prod_rmv_dayahead_forecasted.xlsx",
-    #         index=False,
-    #     )
+    df_weighted_delta_by_malo = (
+        df_dropdup.groupby(["malo"])
+        .agg(
+            total_prod_kwh_malo=("production_kwh", "sum"),
+            spot_rmv_eur_malo=("deltaspot_eur", "sum"),
+        )
+        .reset_index()
+    )
+    df_weighted_delta_by_malo["weighted_delta_permalo"] = (
+        df_weighted_delta_by_malo["spot_rmv_eur_malo"]
+        / (df_weighted_delta_by_malo["total_prod_kwh_malo"] / 1000)
+    ).round(2)
 
-    # except Exception:
-    #     pass
+    total_prod = df_dropdup.groupby(["malo"])["production_kwh"].sum()
 
-    monthly_agg = (
+    df_monthly_delta = (
         df_dropdup.groupby(["year", "month", "malo"])
         .agg(
             deltaspot_eur_monthly=("deltaspot_eur", "sum"),
@@ -1735,33 +2403,11 @@ def process_production_data(
         )
         .reset_index()
     )
+    df_monthly_delta["total_prod_kwh"] = df_monthly_delta["malo"].map(total_prod)
+    df_monthly_delta["total_prod_mwh"] = df_monthly_delta["total_prod_kwh"] / 1000
 
-    weighted_delta_permalo = (
-        df_dropdup.groupby(["malo"])
-        .agg(
-            total_prod_kwh_malo=("production_kwh", "sum"),
-            spot_rmv_eur_malo=("deltaspot_eur", "sum"),
-        )
-        .reset_index()
-    )
-
-    weighted_delta_permalo["weighted_delta_permalo"] = (
-        weighted_delta_permalo["spot_rmv_eur_malo"]
-        / (weighted_delta_permalo["total_prod_kwh_malo"] / 1000)
-    ).round(2)
-
-    for d in [df_dropdup, monthly_agg, weighted_delta_permalo]:
-
-        d["malo"] = d["malo"].astype(str).str.strip()
-
-    total_prod = df_dropdup.groupby(["malo"])["production_kwh"].sum()
-
-    monthly_agg["total_prod_kwh"] = monthly_agg["malo"].map(total_prod)
-
-    monthly_agg["total_prod_mwh"] = monthly_agg["total_prod_kwh"] / 1000
-
-    year_agg = (
-        monthly_agg.groupby(["malo"], dropna=False)
+    df_capacity_inputs_by_malo = (
+        df_monthly_delta.groupby(["malo"], dropna=False)
         .agg(
             available_months=("available_months", "first"),
             available_years=("available_years", "first"),
@@ -1771,10 +2417,132 @@ def process_production_data(
     )
 
     return {
-        "monthly_agg": monthly_agg,
-        "weighted_delta_permalo": weighted_delta_permalo,
-        "year_agg": year_agg,
+        "weighted_delta_permalo": df_weighted_delta_by_malo,
+        "year_agg": df_capacity_inputs_by_malo,
     }
+
+
+def build_monthly_weighted_delta_comparison(
+    df_original: pd.DataFrame,
+    df_forecast: pd.DataFrame,
+    output_path: Path,
+) -> pd.DataFrame:
+    """Compute monthly weighted_delta_permalo per malo for original vs forecast production and save as Excel."""
+
+    def _monthly_weighted_delta(df_input: pd.DataFrame) -> pd.DataFrame:
+        df = df_input.copy()
+
+        if "production_kwh" in df.columns:
+            df["production_kwh"] = pd.to_numeric(df["production_kwh"], errors="coerce")
+        elif "power_kwh_forecast" in df.columns:
+            df["production_kwh"] = pd.to_numeric(
+                df["power_kwh_forecast"], errors="coerce"
+            )
+        elif "power_kwh" in df.columns:
+            df["production_kwh"] = pd.to_numeric(df["power_kwh"], errors="coerce")
+        else:
+            raise KeyError(
+                "Missing production column for monthly weighted delta: expected one of "
+                "'production_kwh', 'power_kwh_forecast', or 'power_kwh'"
+            )
+
+        if "time_berlin" in df.columns:
+            df["time_berlin"] = pd.to_datetime(df["time_berlin"], errors="coerce")
+            if "year" not in df.columns:
+                df["year"] = df["time_berlin"].dt.year
+            if "month" not in df.columns:
+                df["month"] = df["time_berlin"].dt.month
+
+        required_cols = [
+            "malo",
+            "year",
+            "month",
+            "dayaheadprice",
+            "monthly_reference_market_price_eur_mwh",
+            "production_kwh",
+        ]
+        missing_cols = [c for c in required_cols if c not in df.columns]
+        if missing_cols:
+            raise KeyError(
+                f"Missing required columns for monthly weighted delta: {missing_cols}"
+            )
+
+        df = df.drop_duplicates(subset=["malo", "time_berlin", "production_kwh"])
+
+        df["deltaspot_eur"] = (
+            pd.to_numeric(df["production_kwh"], errors="coerce")
+            * pd.to_numeric(df["dayaheadprice"], errors="coerce")
+            / 1000
+        ) - (
+            pd.to_numeric(df["production_kwh"], errors="coerce")
+            * pd.to_numeric(
+                df["monthly_reference_market_price_eur_mwh"], errors="coerce"
+            )
+            / 1000
+        )
+
+        monthly = (
+            df.groupby(["malo", "year", "month"], dropna=False)
+            .agg(
+                monthly_prod_kwh=("production_kwh", "sum"),
+                monthly_deltaspot_eur=("deltaspot_eur", "sum"),
+            )
+            .reset_index()
+        )
+
+        monthly["weighted_delta_permalo_monthly"] = (
+            monthly["monthly_deltaspot_eur"] / (monthly["monthly_prod_kwh"] / 1000)
+        ).round(2)
+
+        monthly["date_month"] = pd.to_datetime(
+            {
+                "year": pd.to_numeric(monthly["year"], errors="coerce"),
+                "month": pd.to_numeric(monthly["month"], errors="coerce"),
+                "day": 1,
+            },
+            errors="coerce",
+        )
+        return monthly
+
+    monthly_original = _monthly_weighted_delta(df_original).rename(
+        columns={
+            "monthly_prod_kwh": "monthly_prod_kwh_original",
+            "monthly_deltaspot_eur": "monthly_deltaspot_eur_original",
+            "weighted_delta_permalo_monthly": "weighted_delta_permalo_monthly_original",
+        }
+    )
+
+    monthly_forecast = _monthly_weighted_delta(df_forecast).rename(
+        columns={
+            "monthly_prod_kwh": "monthly_prod_kwh_forecast",
+            "monthly_deltaspot_eur": "monthly_deltaspot_eur_forecast",
+            "weighted_delta_permalo_monthly": "weighted_delta_permalo_monthly_forecast",
+        }
+    )
+
+    monthly_comparison = monthly_original.merge(
+        monthly_forecast,
+        on=["malo", "year", "month", "date_month"],
+        how="outer",
+    )
+
+    monthly_comparison["different_forecast-original"] = (
+        monthly_comparison["weighted_delta_permalo_monthly_forecast"]
+        - monthly_comparison["weighted_delta_permalo_monthly_original"]
+    ).round(2)
+
+    monthly_comparison = monthly_comparison.sort_values(
+        ["malo", "date_month"]
+    ).reset_index(drop=True)
+
+    save_multisheet_excel(monthly_comparison, str(output_path))
+    print(f"✅ Saved monthly weighted-delta comparison: {output_path}")
+    return monthly_comparison
+
+
+# =============================================================================
+# CURTAILMENT FORECASTING (ML) (ported from code_test_refactored.py)
+# =============================================================================
 
 
 def feature_engineering_classification(
@@ -1786,105 +2554,134 @@ def feature_engineering_classification(
     df = df.copy()
 
     if "volume__mw_imbalance" in df.columns:
-
         df["volume__mw_imbalance"] = pd.to_numeric(
             df["volume__mw_imbalance"], errors="coerce"
         ).fillna(0)
-
     else:
-
         df["volume__mw_imbalance"] = 0.0
 
-    if "curtailment_kWh_per_kw" in df.columns:
-
-        df["curtailment_flag"] = (df["curtailment_kWh_per_kw"] > 0).astype(int)
-
+    if (
+        "curtailment_kWh_per_kw" in df.columns
+        and df["curtailment_kWh_per_kw"].notna().any()
+    ):
+        actual_mask = df["curtailment_kWh_per_kw"].notna()
+        df["curtailment_flag"] = np.where(
+            actual_mask,
+            (pd.to_numeric(df["curtailment_kWh_per_kw"], errors="coerce") > 0).astype(
+                int
+            ),
+            np.nan,
+        )
         has_actual_values = True
-
     else:
-
         has_actual_values = False
 
     df = df.rename(columns={"dayaheadprice": "dayaheadprice_eur_mwh"})
 
     for col in ["dayaheadprice_eur_mwh", "rebap_euro_per_mwh"]:
-
         if col in df.columns:
-
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    df["quarterly_energy_kWh_per_kw"] = df["power_kwh"] / df["net_power_kw_unit"]
+    if "net_power_kw_unit" not in df.columns:
+        capacity_candidate_cols = [
+            "sum_power_kw_malo",
+            "net_power_kw",
+            "sum_power_kw_malo_x",
+            "sum_power_kw_malo_y",
+            "net_power_kw_x",
+            "net_power_kw_y",
+            "Power in MW",
+            "Power in MW_x",
+            "Power in MW_y",
+        ]
+        capacity_col = next(
+            (c for c in capacity_candidate_cols if c in df.columns), None
+        )
+
+        if capacity_col is None:
+            raise KeyError(
+                "Missing installed-capacity column for forecasting: expected one of "
+                "'net_power_kw_unit', 'sum_power_kw_malo', 'net_power_kw', or merged variants (_x/_y)."
+            )
+
+        if capacity_col.startswith("Power in MW"):
+            df["net_power_kw_unit"] = (
+                pd.to_numeric(df[capacity_col], errors="coerce") * 1000
+            )
+        else:
+            df["net_power_kw_unit"] = pd.to_numeric(df[capacity_col], errors="coerce")
+
+        print(
+            f"⚠️ 'net_power_kw_unit' missing; using '{capacity_col}' as fallback for installed capacity"
+        )
+
+    denom_kw = pd.to_numeric(df["net_power_kw_unit"], errors="coerce").replace(
+        0, np.nan
+    )
+    df["quarterly_energy_kWh_per_kw"] = (
+        pd.to_numeric(df["power_kwh"], errors="coerce") / denom_kw
+    )
 
     df["DA_negative_flag"] = (df["dayaheadprice_eur_mwh"] < 0).astype(int)
-
     df["DA_negative_flag_lag_1"] = df["DA_negative_flag"].shift(1)
 
     df["rebap_negative_flag"] = (df["rebap_euro_per_mwh"] < 0).astype(int)
-
     df["rebap_negative_flag_lag_1"] = df["rebap_negative_flag"].shift(1)
 
-    available_features = [f for f in feature_names if f in df.columns]
-
     missing_features = [f for f in feature_names if f not in df.columns]
-
     if missing_features:
+        print(
+            "⚠️ Missing classification features from model metadata; "
+            f"creating 0.0 fallback columns: {missing_features}"
+        )
+        for f in missing_features:
+            df[f] = 0.0
 
-        print(f"⚠️ Missing classification features: {missing_features}")
+    for f in feature_names:
+        df[f] = pd.to_numeric(df[f], errors="coerce")
 
-        if not available_features:
-
-            raise ValueError("No required classification features available.")
-
-    df_clean = df.dropna(subset=available_features).copy()
-
+    df_clean = df.dropna(subset=feature_names).copy()
     if df_clean.empty:
-
         raise ValueError(
             "No valid rows after classification cleaning (NaNs in features)."
         )
 
-    for f in available_features:
-
-        df_clean[f] = pd.to_numeric(df_clean[f], errors="coerce")
-
-    return df_clean, available_features, has_actual_values
+    return df_clean, feature_names, has_actual_values
 
 
 def predict_curtailment_classification(
     df_new_prediction: pd.DataFrame,
     model_path: str,
     metadata_path: str,
-    threshold_path: str,
     plot: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Run classification model on new data."""
 
+    if joblib is None:
+        print("⚠️ joblib not available; cannot run classification forecasting.")
+        return None
+
     print_header("CLASSIFICATION – LOADING MODEL & METADATA")
 
     try:
-
         best_model = joblib.load(model_path)
-
-        _ = metadata_path  # kept for compatibility
-
-        with open(threshold_path, "r") as f:
-
-            threshold_info = json.load(f)
-
+        with open(metadata_path, "r") as f:
+            metadata = json.load(f)
     except FileNotFoundError as e:
-
         print(f"❌ Error loading classification files: {e}")
-
         return None
 
-    feature_names = threshold_info["feature_names"]
+    if not isinstance(metadata, dict):
+        raise ValueError("Classification metadata must be a JSON object.")
 
-    average_optimal_threshold = threshold_info["average_optimal_threshold"]
+    feature_names = metadata["feature_names"]
+    optimal_threshold = float(
+        pd.to_numeric(metadata["80/20_optimal_threshold"], errors="coerce")
+    )
 
-    print(f"Using optimal threshold: {average_optimal_threshold:.4f}")
+    print(f"Using optimal threshold: {optimal_threshold:.4f}")
 
     print_header("CLASSIFICATION – FEATURE ENGINEERING")
-
     df_clean, available_features, has_actual_values = (
         feature_engineering_classification(
             df_new_prediction,
@@ -1893,41 +2690,44 @@ def predict_curtailment_classification(
     )
 
     X_new = df_clean[available_features]
-
     print(f"Classification rows: {len(X_new)}, features used: {available_features}")
 
     print_header("CLASSIFICATION – PREDICTION")
-
     y_proba = best_model.predict_proba(X_new)[:, 1]
-
-    y_pred = (y_proba >= average_optimal_threshold).astype(int)
+    y_pred = (y_proba >= optimal_threshold).astype(int)
 
     df_clean["predicted_curtailment_probability"] = y_proba
-
     df_clean["predicted_curtailment_flag"] = y_pred
-
-    df_clean["prediction_timestamp_cls"] = pd.Timestamp.now()
+    df_clean["prediction_timestamp_cls"] = (
+        pd.Timestamp.now(tz="Europe/Berlin")
+        .tz_localize(None)
+        .strftime("%Y-%m-%d %H:%M")
+    )
 
     print(
         f"Predicted curtailment == 1 for {y_pred.sum():,} rows "
         f"({y_pred.mean()*100:.1f}% of classified rows)."
     )
 
-    if has_actual_values and "curtailment_flag" in df_clean.columns:
+    if (
+        has_actual_values
+        and "curtailment_flag" in df_clean.columns
+        and accuracy_score is not None
+    ):
+        actual_mask = df_clean["curtailment_flag"].notna()
+        if actual_mask.any():
+            y_actual = df_clean.loc[actual_mask, "curtailment_flag"].astype(int)
+            y_pred_actual = y_pred[actual_mask.values]
+            y_proba_actual = y_proba[actual_mask.values]
 
-        y_actual = df_clean["curtailment_flag"]
-
-        accuracy = accuracy_score(y_actual, y_pred)
-
-        precision = precision_score(y_actual, y_pred, zero_division=0)
-
-        recall = recall_score(y_actual, y_pred, zero_division=0)
-
-        f1 = f1_score(y_actual, y_pred, zero_division=0)
-
-        roc_auc = roc_auc_score(y_actual, y_proba)
-
-        avg_precision = average_precision_score(y_actual, y_proba)
+            accuracy = accuracy_score(y_actual, y_pred_actual)
+            precision = precision_score(y_actual, y_pred_actual, zero_division=0)
+            recall = recall_score(y_actual, y_pred_actual, zero_division=0)
+            f1 = f1_score(y_actual, y_pred_actual, zero_division=0)
+            roc_auc = roc_auc_score(y_actual, y_proba_actual)
+            avg_precision = average_precision_score(y_actual, y_proba_actual)
+        else:
+            accuracy = precision = recall = f1 = roc_auc = avg_precision = None
 
         print_header("CLASSIFICATION – METRICS (ACTUALS AVAILABLE)")
         print(f"Accuracy:      {accuracy:.4f}")
@@ -1936,26 +2736,28 @@ def predict_curtailment_classification(
         print(f"F1-Score:      {f1:.4f}")
         print(f"ROC AUC:       {roc_auc:.4f}")
         print(f"Avg Precision: {avg_precision:.4f}")
-
     else:
         accuracy = precision = recall = f1 = roc_auc = avg_precision = None
-        print("ℹ️ No actual curtailment available for classification metrics.")
+        if (
+            has_actual_values
+            and "curtailment_flag" in df_clean.columns
+            and accuracy_score is None
+        ):
+            print("ℹ️ sklearn.metrics not available; skipping classification metrics.")
+        else:
+            print("ℹ️ No actual curtailment available for classification metrics.")
 
-    if plot:
+    if plot and plt is not None and sns is not None:
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
         sns.histplot(y_proba, bins=30, kde=True, ax=ax1)
-        ax1.axvline(
-            average_optimal_threshold, color="red", linestyle="--", label="Threshold"
-        )
+        ax1.axvline(optimal_threshold, color="red", linestyle="--", label="Threshold")
         ax1.set_title("Linear Scale")
         ax1.set_xlabel("P(curtailment=1)")
         ax1.set_ylabel("Frequency")
         ax1.legend()
-        sns.histplot(y_proba, bins=30, kde=True, ax=ax2)
 
-        ax2.axvline(
-            average_optimal_threshold, color="red", linestyle="--", label="Threshold"
-        )
+        sns.histplot(y_proba, bins=30, kde=True, ax=ax2)
+        ax2.axvline(optimal_threshold, color="red", linestyle="--", label="Threshold")
         ax2.set_yscale("log")
         ax2.set_title("Log Scale")
         ax2.set_xlabel("P(curtailment=1)")
@@ -1965,12 +2767,14 @@ def predict_curtailment_classification(
         plt.suptitle("Predicted Probability Distribution", fontsize=14)
         plt.tight_layout()
         plt.show()
+    elif plot:
+        print("ℹ️ Plot requested but matplotlib/seaborn not available; skipping plots.")
 
     return {
         "predictions": df_clean,
         "model": best_model,
         "features_used": available_features,
-        "optimal_threshold": average_optimal_threshold,
+        "optimal_threshold": optimal_threshold,
         "prediction_metrics": {
             "accuracy": accuracy,
             "precision": precision,
@@ -2005,71 +2809,53 @@ def feature_engineering_regression(
         "rebap_euro_per_mwh",
         "volume__mw_imbalance",
         "id500_eur_mwh",
+        "rmv_eur_per_mwh",
     ]
 
     for col in exo_features:
-
         if col in df.columns:
-
             df[col] = pd.to_numeric(df[col], errors="coerce").ffill().bfill()
-
         else:
-
             print(f"⚠️ Regression: missing feature {col} – filled with 0.")
-
             df[col] = 0.0
 
-    if "curtailment_kWh_per_kw" in df.columns:
-
-        df["curt_lag_1"] = df["curtailment_kWh_per_kw"].shift(1)
-
-        df["curt_lag_2"] = df["curtailment_kWh_per_kw"].shift(2)
+    # if "curtailment_kWh_per_kw" in df.columns:
+    #     df["curt_lag_1"] = df["curtailment_kWh_per_kw"].shift(1)
+    #     df["curt_lag_2"] = df["curtailment_kWh_per_kw"].shift(2)
 
     available_features = [f for f in reg_features if f in df.columns]
-
     missing_features = [f for f in reg_features if f not in df.columns]
 
     if missing_features:
-
         print(f"⚠️ Missing regression features: {missing_features}")
-
         if not available_features:
-
             raise ValueError("No required regression features available.")
 
     df_clean = df.dropna(subset=available_features).copy()
-
     if df_clean.empty:
-
         raise ValueError("No valid rows after regression cleaning (NaNs in features).")
 
     X_new = df_clean[available_features].apply(pd.to_numeric, errors="coerce")
-
     return df_clean, X_new, available_features
 
 
 def plot_regression_predictions(df_clean: pd.DataFrame):
     """Plot regression prediction distribution + time plot."""
 
+    if plt is None:
+        print("ℹ️ matplotlib not available; skipping regression plots.")
+        return
+
     y_pred = df_clean["predicted_curtailment_kWh_per_kw"].values
-
     has_actual = "curtailment_kWh_per_kw" in df_clean.columns
-
     y_actual = df_clean["curtailment_kWh_per_kw"].values if has_actual else None
 
-    if has_actual:
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
+    if has_actual:
         y_actual_plot = df_clean[df_clean["curtailment_kWh_per_kw"] > 0][
             "curtailment_kWh_per_kw"
         ].values
-
-        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-
-    else:
-
-        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-
-    if has_actual:
 
         axes[0].hist(
             y_actual_plot,
@@ -2090,39 +2876,25 @@ def plot_regression_predictions(df_clean: pd.DataFrame):
     )
 
     axes[0].set_xlabel("Curtailment (kWh/kW)")
-
     axes[0].set_ylabel("Frequency")
-
     axes[0].set_title("Curtailment Distribution")
-
     axes[0].grid(True, alpha=0.3)
-
     if has_actual:
-
         axes[0].legend()
 
     time_col = None
-
     for candidate in ["delivery_start_berlin", "time_berlin", "timestamp"]:
-
         if candidate in df_clean.columns:
-
             time_col = candidate
-
             break
 
     if time_col:
-
         df_sorted = df_clean.sort_values(time_col)
-
         x_vals = df_sorted[time_col]
-
         y_pred_sorted = df_sorted["predicted_curtailment_kWh_per_kw"]
-
         axes[1].plot(x_vals, y_pred_sorted, color="red", linewidth=1, label="Predicted")
 
-        if has_actual:
-
+        if has_actual and y_actual is not None:
             axes[1].plot(
                 x_vals,
                 df_sorted["curtailment_kWh_per_kw"],
@@ -2131,77 +2903,73 @@ def plot_regression_predictions(df_clean: pd.DataFrame):
                 alpha=0.4,
                 label="Actual",
             )
-
         axes[1].set_xlabel("Time")
-
         axes[1].tick_params(axis="x", rotation=45)
-
     else:
-
         x_vals = np.arange(len(y_pred))
-
         axes[1].plot(x_vals, y_pred, color="red", linewidth=1.2, label="Predicted")
-
         if has_actual and y_actual is not None:
-
             axes[1].plot(
-                x_vals, y_actual, color="blue", linewidth=1.2, alpha=0.8, label="Actual"
+                x_vals,
+                y_actual,
+                color="blue",
+                linewidth=1.2,
+                alpha=0.8,
+                label="Actual",
             )
-
         axes[1].set_xlabel("Sample Index")
 
     axes[1].set_ylabel("Curtailment (kWh/kW)")
-
     axes[1].set_title("Curtailment Over Time")
-
     if has_actual:
-
         axes[1].legend()
-
     axes[1].grid(True, alpha=0.3)
 
     plt.tight_layout()
-
     plt.show()
 
 
 def predict_curtailment_regression(
     df_reg_input: pd.DataFrame,
     model_path: str,
-    params_path: str,
+    metadata_path: str,
     plot: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Run regression model on subset of rows (already filtered by classification)."""
 
-    try:
-
-        best_model = joblib.load(model_path)
-
-        with open(params_path, "r") as f:
-
-            best_params = json.load(f)
-
-        _ = best_params
-
-    except FileNotFoundError as e:
-
-        print(f"❌ Error loading regression files: {e}")
-
+    if joblib is None:
+        print("⚠️ joblib not available; cannot run regression forecasting.")
         return None
 
-    reg_features = [
+    try:
+        best_model = joblib.load(model_path)
+        with open(metadata_path, "r") as f:
+            metadata = json.load(f)
+    except FileNotFoundError as e:
+        print(f"❌ Error loading regression files: {e}")
+        return None
+
+    default_reg_features = [
         "quarterly_energy_kWh_per_kw",
         "enwex_percentage",
         "dayaheadprice_eur_mwh",
         "rebap_euro_per_mwh",
         "volume__mw_imbalance",
         "id500_eur_mwh",
+        "rmv_eur_per_mwh",
     ]
 
+    if not isinstance(metadata, dict):
+        raise ValueError("Regression metadata must be a JSON object.")
+
+    reg_features = (
+        metadata["feature_names"]
+        if metadata.get("feature_names")
+        else default_reg_features
+    )
+
     if df_reg_input.empty:
-
         print("ℹ️ No rows passed to regression (no predicted curtailment = 1).")
-
         return {
             "predictions": df_reg_input.assign(predicted_curtailment_kWh_per_kw=np.nan),
             "model": best_model,
@@ -2217,49 +2985,44 @@ def predict_curtailment_regression(
         }
 
     print_header("REGRESSION – FEATURE ENGINEERING ON FILTERED ROWS")
-
     df_clean, X_new, used_features = feature_engineering_regression(
         df_reg_input, reg_features
     )
-
     print(f"Regression rows: {len(X_new)}, features used: {used_features}")
 
     y_pred = best_model.predict(X_new)
-
     df_clean["predicted_curtailment_kWh_per_kw"] = y_pred
+    # df_clean["prediction_timestamp_reg"] = pd.Timestamp.now(tz="Europe/Berlin").tz_localize(None).strftime("%Y-%m-%d %H:%M")
 
-    df_clean["prediction_timestamp_reg"] = pd.Timestamp.now()
+    mse = mae = mape = r2 = None
 
-    if "curtailment_kWh_per_kw" in df_clean.columns:
-
-        y_actual = df_clean["curtailment_kWh_per_kw"]
-
-        mse = mean_squared_error(y_actual, y_pred)
-
-        mae = mean_absolute_error(y_actual, y_pred)
-
-        mape = mean_absolute_percentage_error(y_actual, y_pred)
-
-        r2 = r2_score(y_actual, y_pred)
-
-        print_header("REGRESSION – METRICS (ACTUALS AVAILABLE)")
-
-        print(f"MSE:  {mse:.4f}")
-
-        print(f"MAE:  {mae:.4f}")
-
-        print(f"MAPE: {mape:.4f}")
-
-        print(f"R²:   {r2:.4f}")
-
+    if "curtailment_kWh_per_kw" in df_clean.columns and mean_squared_error is not None:
+        actual_mask = df_clean["curtailment_kWh_per_kw"].notna()
+        if actual_mask.any():
+            y_actual = df_clean.loc[actual_mask, "curtailment_kWh_per_kw"].astype(float)
+            y_pred_actual = (
+                pd.Series(y_pred, index=df_clean.index).loc[actual_mask].astype(float)
+            )
+            mse = mean_squared_error(y_actual, y_pred_actual)
+            mae = mean_absolute_error(y_actual, y_pred_actual)
+            mape = mean_absolute_percentage_error(y_actual, y_pred_actual)
+            r2 = r2_score(y_actual, y_pred_actual)
+            print_header("REGRESSION – METRICS (ACTUALS AVAILABLE)")
+            print(f"MSE:  {mse:.4f}")
+            print(f"MAE:  {mae:.4f}")
+            print(f"MAPE: {mape:.4f}")
+            print(f"R²:   {r2:.4f}")
+        else:
+            print(
+                "ℹ️ Actual curtailment column exists but has no non-null values; skipping regression metrics."
+            )
     else:
-
-        mse = mae = mape = r2 = None
-
-        print("ℹ️ No actual curtailment available for regression metrics.")
+        if "curtailment_kWh_per_kw" in df_clean.columns and mean_squared_error is None:
+            print("ℹ️ sklearn.metrics not available; skipping regression metrics.")
+        else:
+            print("ℹ️ No actual curtailment available for regression metrics.")
 
     if plot:
-
         plot_regression_predictions(df_clean)
 
     return {
@@ -2281,9 +3044,8 @@ def run_curtailment_forecast(
     df_new_prediction: pd.DataFrame,
     cls_model_path: str,
     cls_meta_path: str,
-    cls_thresh_path: str,
     reg_model_path: str,
-    reg_params_path: str,
+    reg_meta_path: str,
     plot_class: bool = False,
     plot_reg: bool = False,
 ) -> Optional[Dict[str, Any]]:
@@ -2293,45 +3055,34 @@ def run_curtailment_forecast(
         df_new_prediction,
         model_path=cls_model_path,
         metadata_path=cls_meta_path,
-        threshold_path=cls_thresh_path,
         plot=plot_class,
     )
 
     if cls_results is None:
-
         return None
 
     df_cls = cls_results["predictions"].copy()
-
     if "predicted_curtailment_flag" not in df_cls.columns:
-
         print("❌ Classification result missing 'predicted_curtailment_flag'.")
-
         return {"classification": cls_results, "regression": None, "combined": df_cls}
 
     df_for_reg = df_cls[df_cls["predicted_curtailment_flag"] == 1].copy()
-
     print_header("PIPELINE – ROWS FOR REGRESSION")
-
     print(f"Rows flagged as curtailment (1): {len(df_for_reg)}")
 
     reg_results = predict_curtailment_regression(
         df_for_reg,
         model_path=reg_model_path,
-        params_path=reg_params_path,
+        metadata_path=reg_meta_path,
         plot=plot_reg,
     )
 
     df_combined = df_cls.copy()
-
     df_combined["predicted_curtailment_kWh_per_kw"] = np.nan
 
     if reg_results is not None and not reg_results["predictions"].empty:
-
         df_reg_pred = reg_results["predictions"].copy()
-
         merge_keys = ["malo", "delivery_start_berlin"]
-
         df_reg_pred = df_reg_pred[merge_keys + ["predicted_curtailment_kWh_per_kw"]]
 
         df_combined = df_combined.merge(
@@ -2344,9 +3095,7 @@ def run_curtailment_forecast(
         df_combined["predicted_curtailment_kWh_per_kw"] = df_combined[
             "predicted_curtailment_kWh_per_kw_reg"
         ]
-
         df_combined.drop(columns=["predicted_curtailment_kWh_per_kw_reg"], inplace=True)
-
         df_combined["predicted_curtailment_kWh_per_kw"] = pd.to_numeric(
             df_combined["predicted_curtailment_kWh_per_kw"],
             errors="coerce",
@@ -2360,29 +3109,44 @@ def run_curtailment_forecast(
 
 
 def set_paths_for_category(category: str) -> Dict[str, str]:
-
     base_path = os.getenv("CURTAILMENT_MODEL_BASE_PATH", MODEL_BASE_PATH)
+    base_path = (base_path or "").rstrip("/")
 
     category_mapping = {
         "PV_rules": "PV_rules",
-        "PV_no_rules": "PV_NORULES",
+        "PV_no_rules": "PV_no_rules",
         "WIND_rules": "WIND_rules",
-        "WIND_no_rules": "WIND_NORULES",
+        "WIND_no_rules": "WIND_no_rules",
     }
 
     if category not in category_mapping:
-
         raise ValueError(f"Unknown category: {category}")
 
-    folder_name = category_mapping[category]
+    if not base_path:
+        raise ValueError(
+            "MODEL_BASE_PATH (or CURTAILMENT_MODEL_BASE_PATH) is not set; cannot locate curtailment models."
+        )
 
-    return {
-        "CLASS_MODEL_PATH": f"{base_path}/{folder_name}/classification_best_model_{folder_name}.joblib",
-        "CLASS_META_PATH": f"{base_path}/{folder_name}/classification_xgboost_curtailment_model_{folder_name}.joblib",
-        "CLASS_THRESH_PATH": f"{base_path}/{folder_name}/classification_best_params_{folder_name}.json",
-        "REG_MODEL_PATH": f"{base_path}/{folder_name}/regression_best_model_{folder_name}.joblib",
-        "REG_PARAMS_PATH": f"{base_path}/{folder_name}/regression_best_params_{folder_name}.json",
+    folder_name = category_mapping[category]
+    category_dir = f"{base_path}/{folder_name}"
+    # model_result_dir = f"{category_dir}/model result"
+
+    paths = {
+        "CLASS_MODEL_PATH": f"{category_dir}/classification_best_model_{folder_name}.joblib",
+        "CLASS_META_PATH": f"{category_dir}/classification_metadata_{folder_name}.json",
+        "REG_MODEL_PATH": f"{category_dir}/regression_best_model_{folder_name}.joblib",
+        "REG_META_PATH": f"{category_dir}/regression_metadata_{folder_name}.json",
     }
+
+    missing = [key for key, path in paths.items() if not os.path.exists(path)]
+    if missing:
+        missing_details = ", ".join([f"{key}={paths[key]}" for key in missing])
+        raise FileNotFoundError(
+            "Updated curtailment artifacts not found. Expected only new model-result files: "
+            f"{missing_details}"
+        )
+
+    return paths
 
 
 def run_curtailment_forecast_multi_category(
@@ -2409,9 +3173,7 @@ def run_curtailment_forecast_multi_category(
                     ),
                 ),
             )
-
         else:
-
             raise ValueError(
                 "df_ts must contain 'category' (or at least 'tech' and 'EEG' to derive it)."
             )
@@ -2426,8 +3188,6 @@ def run_curtailment_forecast_multi_category(
     all_results_by_category: Dict[str, Any] = {}
 
     for category, df_cat in df_ts.groupby("category"):
-
-        print(df_ts["category"].unique().tolist())
         print_header(f"🍫🍫 RUNNING CATEGORY: {category}")
         paths = set_paths_for_category(category)
 
@@ -2435,9 +3195,8 @@ def run_curtailment_forecast_multi_category(
             df_new_prediction=df_cat,
             cls_model_path=paths["CLASS_MODEL_PATH"],
             cls_meta_path=paths["CLASS_META_PATH"],
-            cls_thresh_path=paths["CLASS_THRESH_PATH"],
             reg_model_path=paths["REG_MODEL_PATH"],
-            reg_params_path=paths["REG_PARAMS_PATH"],
+            reg_meta_path=paths["REG_META_PATH"],
             plot_class=plot_class,
             plot_reg=plot_reg,
         )
@@ -2452,30 +3211,22 @@ def run_curtailment_forecast_multi_category(
         return None
 
     df_all = pd.concat(all_combined, ignore_index=True)
-
     return {"by_category": all_results_by_category, "combined": df_all}
-
-
-# =============================================================================
-
-# REPORT GENERATION
-
-# =============================================================================
 
 
 def generate_output_sheets(
     df: pd.DataFrame, has_production: bool = False, has_forecast: bool = False
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
+    """Generate three output sheets for customer report."""
 
-    Generate three output sheets for customer report
-    Returns:
+    df = normalize_nan_strings(df.copy())
 
-        Tuple of (sheet1, sheet2, sheet3)
-
-    """
-
-    # Define column orders for each sheet
+    # Only include Enervis year columns that exist and have at least one non-null value.
+    enervis_year_cols = [
+        c
+        for c in [f"enervis_{y}" for y in TARGET_YEARS]
+        if c in df.columns and not df[c].isna().all()
+    ]
 
     sheet1_order = [
         "malo",
@@ -2490,10 +3241,7 @@ def generate_output_sheets(
         "weighted_2024_eur_mwh_blindleister",
         "weighted_2025_eur_mwh_blindleister",
         "average_weighted_eur_mwh_blindleister",
-        "2021",
-        "2023",
-        "2024",
-        "2025",
+        *enervis_year_cols,
         "avg_enervis",
         "weighted_delta_permalo",
         "forecast_weighted_delta_permalo" if has_forecast else None,
@@ -2542,8 +3290,6 @@ def generate_output_sheets(
         "Fee EUR/MWh",
     ]
 
-    # Remove production-only columns if no production data
-
     if not has_production:
         for col in [
             "weighted_delta_permalo",
@@ -2553,527 +3299,427 @@ def generate_output_sheets(
             "available_years",
             "capacity_factor_percent",
         ]:
-
             if col in sheet1_order:
                 sheet1_order.remove(col)
-
             if col in sheet2_order:
                 sheet2_order.remove(col)
 
-    sheet1 = ensure_and_reorder(df.copy(), sheet1_order)
-    sheet2 = ensure_and_reorder(df.copy(), sheet2_order)
-    sheet3 = ensure_and_reorder(df.copy(), sheet3_order)
-
+    sheet1 = sanitize_for_excel(
+        normalize_nan_strings(ensure_and_reorder(df.copy(), sheet1_order))
+    )
+    sheet2 = sanitize_for_excel(
+        normalize_nan_strings(ensure_and_reorder(df.copy(), sheet2_order))
+    )
+    sheet3 = sanitize_for_excel(
+        normalize_nan_strings(ensure_and_reorder(df.copy(), sheet3_order))
+    )
     return sheet1, sheet2, sheet3
 
 
-# =============================================================================
-
-# MAIN EXECUTION
-
-# =============================================================================
-
-
 def main():
-    """
-    Main execution pipeline handling all scenarios:
-    Scenarios handled:
+    """Integrated pipeline: fixings + Blindleister + Enervis + (optional) production report."""
 
-    1. SEE data available → Fetch Blindleister market prices
-    2. SEE wind turbines → Call Enervis API for market value differentials
-    3. Non-SEE wind turbines with manufacturer/model → Match and call Enervis
-    4. Merge SEE and non-SEE Enervis results
-    5. Production data available → Process time series, curtailment, redispatch
-    6. Historical data 2023-2025 → Run ML curtailment forecasting
-    7. Generate reports with all available data
-    """
+    OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
+    input_path = Path(STAMMDATEN_PATH)
+    customer_name = input_path.stem.split("_", 1)[0]
 
-    # folder = Path(
-    #     r"C:\Users\JerrySetiawan\OneDrive - CFP FlexPower\Work\Data pricing\DWAG\DWAG_curt_testing_v2"
-    # )
-
-    # folder_name = folder.name
-    # path = folder / f"{folder_name}_stammdaten.xlsx"
-    # out_path = folder / f"{folder_name}_customerpricing.xlsx"
-    # out_path_highlighted = folder / f"{folder_name}_customerpricing_highlighted.xlsx"
-
-    #folder = Path(__file__).parent.resolve()
-    folder = Path(r"C:\Users\JerrySetiawan\OneDrive - CFP FlexPower\Work\Data pricing\DWAG\DWAG_curt_testing_v2")
-    folder_name = folder.name
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    timestamp_sec = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = OUTPUT_FOLDER / f"{customer_name}_pricing_{timestamp}.xlsx"
 
-    # Files with timestamp to prevent overwrites
-    path = folder / f"{folder_name}_stammdaten.xlsx"
-    out_path = folder / f"{folder_name}_customerpricing_{timestamp}.xlsx"
-    nan_path = folder / f"df_turbines_with_match_nan_matched_turbine_id_with_see_{timestamp_sec}.xlsx"
-    #out_path_highlighted = folder / f"{folder_name}_customerpricing_highlighted_{timestamp}.xlsx"
+    print_header("STARTING PIPELINE")
+    print(f"✅ Input: {input_path}")
+    print(f"✅ Output: {out_path}")
 
-    print(f"✅ Script folder: {folder}")
-    if path.exists():
-        print(f"✅ Found input: {path.name}")
-    else:
-        print(f"⚠️  Input file not found: {path.name}")
-    print_header("STARTING ENERGY PRICING PIPELINE")
-
-    # =========================================================================
-
-    # STEP 1: Load master data and apply fixings
-
-    # =========================================================================
-
-    print_header("STEP 1: LOADING DATA")
-
-    df_fixings = load_bigquery_fixings(PROJECT_ID)
-    df_stamm = load_stammdaten(path)
-
-    print_header("ASSIGNING EEG CATEGORIES")
-    df_stamm = set_category_based_on_conditions(df_stamm)
-
-    print_header("APPLYING FIXINGS")
-    fixings = extract_all_fixings(df_fixings, year="2026")
-    df_stamm = apply_fixings_to_stammdaten(df_stamm, fixings)
-
-    # Track what data we have
-    df_assets_see_enriched = None
-    df_assets_nonsee_enervis_enriched = None
-    df_enervis_mv_by_malo = None
-
-    # =========================================================================
-
-    # STEP 2: Process SEE data (Blindleister + Enervis)
-
-    # =========================================================================
-
-    df_see_units = df_stamm[
-        df_stamm["unit_mastr_id"].str.strip().str.lower().str.startswith("see")
-    ].copy()
-
-    if not df_see_units.empty:
-        print_header("STEP 2A: PROCESSING SEE DATA - BLINDLEISTER")
-
-        # Extract valid SEE IDs
-
-        see_unit_ids = [
-            str(id_).strip().upper()
-            for id_ in df_see_units["unit_mastr_id"].dropna()
-            if str(id_).strip().lower().startswith("see")
-        ]
-
-        print(f"Found {len(set(see_unit_ids))} unique SEE units")
-
-        # Fetch Blindleister market prices
-
-        blindleister = BlindleisterAPI(BLINDLEISTER_EMAIL, BLINDLEISTER_PASSWORD)
-
-        df_blindleister_market_prices_raw = blindleister.get_market_prices(
-            see_unit_ids, [2021, 2023, 2024, 2025]
-        )
-
-        if not df_blindleister_market_prices_raw.empty:
-
-            # Process Blindleister data
-            df_blindleister_weighted_mv = process_blindleister_market_prices(
-                df_blindleister_market_prices_raw
-            )
-
-            # Merge with stammdaten
-            df_assets_with_blindleister = pd.merge(
-                df_stamm, df_blindleister_weighted_mv, on="unit_mastr_id", how="left"
-            )
-
-            # Convert malo to string
-            df_assets_with_blindleister["malo"] = (
-                df_assets_with_blindleister["malo"].astype(str).str.strip()
-            )
-
-            # Check if SEE data contains wind turbines
-            df_see_wind_units = df_see_units[
-                df_see_units["tech"].str.upper() == "WIND"
-            ].copy()
-
-            if not df_see_wind_units.empty:
-                print_header("STEP 2B: PROCESSING SEE WIND - ENERVIS")
-
-                # Load turbine reference
-                df_enervis_turbine_reference = pd.read_excel(TURBINE_REFERENCE_PATH)
-
-                df_enervis_turbine_reference["id"] = (
-                    df_enervis_turbine_reference["id"].astype(str).str.strip()
-                )
-
-                # Prepare turbine data for matching
-                df_turbines_with_match = prepare_turbine_matching_dataframe(
-                    df_see_wind_units, df_enervis_turbine_reference, threshold=76, nan_path= nan_path
-                )
-
-                # Export unmatched turbines for review (Matched_Turbine_ID is
-                # NaN)
-                # df_unmatched_turbines = df_turbines_with_match[
-                #     df_turbines_with_match["Matched_Turbine_ID"].isna()
-                # ].copy()
-
-                #df_turbines_with_match.to_excel(folder/"df_turbines_with_match_nan_matched_turbine_id_with_see.xlsx", index=False)
-
-                # if not df_turbines_with_match.empty:
-                #     save_multisheet_excel(
-                #         df_turbines_with_match,
-                #         str(
-                #             folder
-                #             / "df_turbines_with_match_nan_matched_turbine_id.xlsx"
-                #         ),
-                #     )
-
-                # Filter valid turbines
-
-                df_matched_turbines_for_enervis = df_turbines_with_match.dropna(
-                    subset=["Matched_Turbine_ID"]
-                ).copy()
-
-                df_matched_turbines_for_enervis["hub_height_m"] = (
-                    df_matched_turbines_for_enervis["hub_height_m"]
-                    .fillna(104)
-                    .replace(0, 104)
-                )
-
-                df_matched_turbines_for_enervis["hub_height_m"] = (
-                    df_matched_turbines_for_enervis["hub_height_m"].astype(int)
-                )
-
-                df_matched_turbines_for_enervis["Matched_Turbine_ID"] = (
-                    df_matched_turbines_for_enervis["Matched_Turbine_ID"].astype(int)
-                )
-
-                df_matched_turbines_for_enervis["malo"] = (
-                    df_matched_turbines_for_enervis["malo"].astype(str).str.strip()
-                )
-
-                if not df_matched_turbines_for_enervis.empty:
-
-                    # Call Enervis API
-                    anemos = AnemosAPI(ANEMOS_EMAIL, ANEMOS_PASSWORD)
-                    product_id = anemos.get_historical_product_id()
-
-                    # Build parkinfo
-                    parkinfo = []
-
-                    for _, row in df_matched_turbines_for_enervis.iterrows():
-                        parkinfo.append(
-                            {
-                                "id": int(row["malo"]),
-                                "lat": str(row["latitude"]),
-                                "lon": str(row["longitude"]),
-                                "turbine_type_id": int(row["Matched_Turbine_ID"]),
-                                "hub_height": int(row["hub_height_m"]),
-                            }
-                        )
-
-                    job_uuid = anemos.start_job(product_id, parkinfo)
-
-                    if job_uuid:
-                        job_info = anemos.wait_for_job(job_uuid)
-                        dfs = anemos.extract_results(job_info)
-                        df_enervis_mv_by_malo = process_enervis_results(dfs)
-
-            # Aggregate SEE data by malo
-            df_assets_see_agg_by_malo = aggregate_stammdaten_by_malo(
-                df_assets_with_blindleister
-            )
-
-            # Merge with Enervis if available
-
-            if df_enervis_mv_by_malo is not None and not df_enervis_mv_by_malo.empty:
-                df_enervis_mv_by_malo["id"] = df_enervis_mv_by_malo["id"].astype(str)
-
-                df_assets_see_enriched = pd.merge(
-                    df_assets_see_agg_by_malo,
-                    df_enervis_mv_by_malo,
-                    left_on="malo",
-                    right_on="id",
-                    how="left",
-                )
-
-                df_assets_see_enriched.drop(columns=["id"], inplace=True)
-
-                df_assets_see_enriched = df_assets_see_enriched.rename(
-                    columns={"tech": "Technology"}
-                )
-
-            else:
-
-                df_assets_see_enriched = df_assets_see_agg_by_malo.rename(
-                    columns={"tech": "Technology"}
-                )
-
-        else:
-
-            print("⚠️ No Blindleister data fetched for SEE units")
-
-    # =========================================================================
-
-    # STEP 3: Process non-SEE wind turbines (manual stammdaten)
-
-    # =========================================================================
-
-    df_nonsee_units = df_stamm[
-        pd.isna(df_stamm["unit_mastr_id"])
-        | (df_stamm["unit_mastr_id"].str.strip() == "")
-        | (df_stamm["unit_mastr_id"].str.lower() == "nan")
-    ].copy()
-
-    # Also add SEE units that didn't get Enervis results
-
-    if df_assets_see_enriched is not None:
-
-        malo_need_enervis = (
-            df_assets_see_enriched[df_assets_see_enriched["avg_enervis"].isna()]["malo"]
-            .astype(str)
-            .str.strip()
-            .unique()
-        )
-
-        if len(malo_need_enervis) > 0:
-
-            stamm_for_empty = df_stamm[
-                df_stamm["malo"].astype(str).str.strip().isin(malo_need_enervis)
-            ].copy()
-
-            df_nonsee_units = pd.concat(
-                [df_nonsee_units, stamm_for_empty], ignore_index=True
-            )
-
-    if not df_nonsee_units.empty:
-
-        df_nonsee_wind_candidates = df_nonsee_units[
-            (df_nonsee_units["tech"].str.upper() == "WIND")
-            & df_nonsee_units["manufacturer"].notna()
-            & df_nonsee_units["turbine_model"].notna()
-        ].copy()
-
-        if not df_nonsee_wind_candidates.empty:
-            print_header(
-                "STEP 3: PROCESSING NON-SEE WIND - ENERVIS, INCLUDING NO RESULT"
-            )
-
-            # Load turbine reference
-            df_enervis_turbine_reference = pd.read_excel(TURBINE_REFERENCE_PATH)
-
-            df_enervis_turbine_reference["id"] = (
-                df_enervis_turbine_reference["id"].astype(str).str.strip()
-            )
-
-            # Prepare turbine data
-
-            df_nonsee_wind_candidates["net_power_kw"] = df_nonsee_wind_candidates[
-                "net_power_kw_unit"
-            ]
-
-            df_turbines_with_match = prepare_turbine_matching_dataframe(
-                df_nonsee_wind_candidates, df_enervis_turbine_reference, threshold=76, nan_path= nan_path
-            )
-
-            # Export unmatched turbines for review (Matched_Turbine_ID is NaN)
-
-            # df_unmatched_turbines = df_turbines_with_match[
-            #     df_turbines_with_match["Matched_Turbine_ID"].isna()
-            # ].copy()
-
-            #df_turbines_with_match.to_excel(folder/"df_turbines_with_match_nan_matched_turbine_id_no_see.xlsx", index=False)
-
-            # if not df_unmatched_turbines.empty:
-
-            #     save_multisheet_excel(
-            #         df_unmatched_turbines,
-            #         str(folder / "df_turbines_with_match_nan_matched_turbine_id.xlsx"),
-            #     )
-
-            # Filter valid turbines
-
-            df_matched_turbines_for_enervis = df_turbines_with_match.dropna(
-                subset=["Matched_Turbine_ID"]
-            ).copy()
-
-            df_matched_turbines_for_enervis["hub_height_m"] = (
-                df_matched_turbines_for_enervis["hub_height_m"]
-                .fillna(104)
-                .replace(0, 104)
-            )
-
-            df_matched_turbines_for_enervis["hub_height_m"] = (
-                df_matched_turbines_for_enervis["hub_height_m"].apply(
-                    lambda x: max(int(x), 50)
-                )
-            )
-
-            df_matched_turbines_for_enervis["Matched_Turbine_ID"] = (
-                df_matched_turbines_for_enervis["Matched_Turbine_ID"].astype(int)
-            )
-
-            df_matched_turbines_for_enervis["malo"] = (
-                df_matched_turbines_for_enervis["malo"].astype(str).str.strip()
-            )
-
-            if not df_matched_turbines_for_enervis.empty:
-
-                # Call Enervis API
-                anemos = AnemosAPI(ANEMOS_EMAIL, ANEMOS_PASSWORD)
-                product_id = anemos.get_historical_product_id()
-                # Build parkinfo
-                parkinfo = []
-                for _, row in df_matched_turbines_for_enervis.iterrows():
-                    parkinfo.append(
-                        {
-                            "id": int(row["malo"]),
-                            "lat": str(row["latitude"]),
-                            "lon": str(row["longitude"]),
-                            "turbine_type_id": int(row["Matched_Turbine_ID"]),
-                            "hub_height": int(row["hub_height_m"]),
-                        }
-                    )
-
-                job_uuid = anemos.start_job(product_id, parkinfo)
-
-                if job_uuid:
-                    job_info = anemos.wait_for_job(job_uuid)
-                    dfs = anemos.extract_results(job_info)
-                    df_enervis_mv_nonsee = process_enervis_results(dfs)
-
-                    # Merge with stammdaten
-
-                    if df_assets_see_enriched is not None:
-                        # We have SEE data, aggregate non-SEE separately
-                        df_assets_agg_by_malo = aggregate_stammdaten_by_malo(df_stamm)
-
-                    else:
-                        # No SEE data, use full stammdaten
-                        df_assets_agg_by_malo = aggregate_stammdaten_by_malo(df_stamm)
-
-                    df_enervis_mv_nonsee["id"] = df_enervis_mv_nonsee["id"].astype(str)
-
-                    df_assets_nonsee_enervis_enriched = pd.merge(
-                        df_assets_agg_by_malo,
-                        df_enervis_mv_nonsee,
-                        left_on="malo",
-                        right_on="id",
-                        how="left",
-                    )
-
-                    df_assets_nonsee_enervis_enriched.drop(columns=["id"], inplace=True)
-
-                    df_assets_nonsee_enervis_enriched = (
-                        df_assets_nonsee_enervis_enriched.dropna(
-                            subset=["2021", "2023", "2024", "2025", "avg_enervis"]
-                        )
-                    )
-
-                    df_assets_nonsee_enervis_enriched = (
-                        df_assets_nonsee_enervis_enriched.rename(
-                            columns={"tech": "Technology"}
-                        )
-                    )
-
-    # =========================================================================
-
-    # STEP 4: Merge SEE and non-SEE Enervis results
-
-    # =========================================================================
-
-    print_header("STEP 4: MERGING RESULTS")
+    print_header("STEP 1: LOADING STAMMDATEN")
+    df_stamm = load_stammdaten(input_path)
 
     if (
-        df_assets_see_enriched is not None
-        and df_assets_nonsee_enervis_enriched is not None
+        "net_power_kw_unit" not in df_stamm.columns
+        and "net_power_kw" in df_stamm.columns
     ):
-
-        print("Merging SEE and non-SEE Enervis results")
-
-        df_assets_enriched = pd.merge(
-            df_assets_see_enriched,
-            df_assets_nonsee_enervis_enriched[
-                ["malo", "2021", "2023", "2024", "2025", "avg_enervis"]
-            ],
-            on="malo",
-            how="left",
-            suffixes=("_see", "_no_see"),
+        df_stamm["net_power_kw_unit"] = pd.to_numeric(
+            df_stamm["net_power_kw"], errors="coerce"
         )
 
-        # Fill missing values
+    print_header("STEP 2: EEG CATEGORIES")
+    df_stamm = set_category_based_on_conditions(df_stamm)
 
-        for col in ["2021", "2023", "2024", "2025", "avg_enervis"]:
+    print_header("STEP 3: APPLYING FIXINGS")
+    try:
+        df_fixings = load_bigquery_fixings(PROJECT_ID)
+        fixings = extract_all_fixings(df_fixings, year=str("2026"))
+        df_stamm = apply_fixings_to_stammdaten(df_stamm, fixings)
+    except Exception as e:
+        print(f"⚠️ Fixings step skipped/failed: {e}")
 
-            df_assets_enriched[col] = df_assets_enriched[col + "_see"].fillna(
-                df_assets_enriched[col + "_no_see"]
+    # =============================================================================
+    # STEP 4: BLINDLEISTER + ENERVIS
+    # =============================================================================
+
+    print_header("STEP 4: BLINDLEISTER + ENERVIS")
+
+    see_ids: List[str] = []
+    if "unit_mastr_id" in df_stamm.columns:
+        see_ids = [
+            str(id_).strip().upper()
+            for id_ in df_stamm["unit_mastr_id"].dropna()
+            if str(id_).strip().upper().startswith("SEE")
+        ]
+    see_ids = list(set(see_ids))
+    print(f"📊 Found {len(see_ids)} unique SEE IDs")
+
+    see_ids_wind: List[str] = []
+    if "unit_mastr_id" in df_stamm.columns and "tech" in df_stamm.columns:
+        for id_ in df_stamm["unit_mastr_id"].dropna():
+            sid = str(id_).strip().upper()
+            if not sid.startswith("SEE"):
+                continue
+            tech_vals = df_stamm.loc[
+                df_stamm["unit_mastr_id"].astype(str).str.strip().str.upper() == sid,
+                "tech",
+            ]
+            tech = (
+                tech_vals.astype(str).str.upper().iloc[0] if not tech_vals.empty else ""
+            )
+            if tech == "WIND":
+                see_ids_wind.append(sid)
+    see_ids_wind = list(set(see_ids_wind))
+
+    blindleister_results = pd.DataFrame()
+    if see_ids:
+        try:
+            blindleister = BlindleisterAPI(
+                BLINDLEISTER_EMAIL, BLINDLEISTER_PASSWORD, BLINDLEISTER_HARDCODED_TOKEN
+            )
+            if not BLINDLEISTER_HARDCODED_TOKEN:
+                blindleister.get_token()
+            df_flat = blindleister.get_market_prices(see_ids, TARGET_YEARS)
+
+            # saving monthly result
+            df_flat.to_excel(
+                OUTPUT_FOLDER / f"blindleister_market_prices_monthly.xlsx", index=False
             )
 
-            df_assets_enriched.drop(
-                columns=[col + "_see", col + "_no_see"], inplace=True
+            blind_units_set = set(df_flat["unit_mastr_id"].unique())
+            stamm_units_set = set(df_stamm["unit_mastr_id"].unique())
+            missing_in_blind = stamm_units_set - blind_units_set
+            if missing_in_blind:
+                print(
+                    f"⚠️ {len(missing_in_blind)} unit_mastr_id from stamm are missing in blind. {list(missing_in_blind)}"
+                )
+            else:
+                print("✅ All unit_mastr_id from Blindleister are present in Stamm")
+
+            if not df_flat.empty:
+                blindleister_results = process_blindleister_data(df_flat)
+        except Exception as e:
+            print(f"❌ Blindleister processing error: {e}")
+
+    df_wind_from_stammdaten = pd.DataFrame()
+    if "tech" in df_stamm.columns and "turbine_model" in df_stamm.columns:
+        mask_wind_manual = (
+            df_stamm["tech"].astype(str).str.upper().eq("WIND")
+            & df_stamm["turbine_model"].notna()
+        )
+        if not df_stamm[mask_wind_manual].empty:
+            df_wind_from_stammdaten = df_stamm[mask_wind_manual].copy()
+
+    df_wind_from_generator_details = pd.DataFrame()
+    if see_ids_wind:
+        try:
+            blindleister_for_mastr = BlindleisterAPI(
+                BLINDLEISTER_EMAIL,
+                BLINDLEISTER_PASSWORD,
+                BLINDLEISTER_HARDCODED_TOKEN,
+            )
+            if not BLINDLEISTER_HARDCODED_TOKEN:
+                blindleister_for_mastr.get_token()
+
+            df_gen_details = blindleister_for_mastr.get_generator_details(
+                see_ids_wind, year=2024
+            )
+            if not df_gen_details.empty:
+                df_gen_details = df_gen_details.copy()
+                df_gen_details["unit_mastr_id"] = (
+                    df_gen_details["unit_mastr_id"].astype(str).str.strip().str.upper()
+                )
+                df_stamm_join = df_stamm.copy()
+                if "unit_mastr_id" in df_stamm_join.columns:
+                    df_stamm_join["unit_mastr_id"] = (
+                        df_stamm_join["unit_mastr_id"]
+                        .astype(str)
+                        .str.strip()
+                        .str.upper()
+                    )
+
+                # Save the raw generator-details enriched with all available stammdaten columns.
+                # This is useful for auditing and debugging turbine matching / Enervis inputs.
+                try:
+                    if "unit_mastr_id" in df_stamm_join.columns:
+                        df_gen_details_merged = df_gen_details.merge(
+                            df_stamm_join,
+                            on="unit_mastr_id",
+                            how="left",
+                            suffixes=("_gen", ""),
+                        )
+                    else:
+                        df_gen_details_merged = df_gen_details.copy()
+
+                    out_gd_path = (
+                        OUTPUT_FOLDER
+                        / f"generator_details_merged_stammdaten_{timestamp}.xlsx"
+                    )
+                    df_gen_details_merged.to_excel(out_gd_path, index=False)
+                    print(
+                        f"💾 Saved generator-details merged with stammdaten: {out_gd_path}"
+                    )
+                except Exception as e:
+                    print(
+                        f"⚠️ Could not save generator-details merged with stammdaten: {e}"
+                    )
+
+                if "energy_source" in df_gen_details.columns:
+                    df_wind_from_generator_details = df_gen_details[
+                        df_gen_details["energy_source"]
+                        .astype(str)
+                        .str.contains("wind", case=False, na=False)
+                    ].copy()
+                else:
+                    df_wind_from_generator_details = df_gen_details.copy()
+                    df_wind_from_generator_details["energy_source"] = "wind"
+
+                if (
+                    "unit_mastr_id" in df_stamm_join.columns
+                    and "malo" in df_stamm_join.columns
+                ):
+                    df_wind_from_generator_details = (
+                        df_wind_from_generator_details.merge(
+                            df_stamm_join[["malo", "unit_mastr_id"]],
+                            on="unit_mastr_id",
+                            how="left",
+                        )
+                    )
+                if (
+                    "net_power_kw" not in df_wind_from_generator_details.columns
+                    and "net_power_kw_unit" in df_wind_from_generator_details.columns
+                ):
+                    df_wind_from_generator_details.rename(
+                        columns={"net_power_kw_unit": "net_power_kw"}, inplace=True
+                    )
+                df_wind_from_generator_details["tech"] = (
+                    df_wind_from_generator_details["energy_source"]
+                    .str.strip()
+                    .str.upper()
+                )
+
+        except Exception as e:
+            print(f"⚠️ Could not fetch/prepare generator-details for Enervis input: {e}")
+
+    def _run_enervis_for_df(df_input: pd.DataFrame, source_label: str) -> pd.DataFrame:
+        if df_input.empty:
+            return pd.DataFrame()
+        anemos = AnemosAPI(ANEMOS_EMAIL, ANEMOS_PASSWORD)
+        anemos.get_token()
+        turbine_ref = pd.read_excel(TURBINE_REFERENCE_PATH)
+        turbine_ref["id"] = turbine_ref["id"].astype(str).str.strip()
+        total_rows = len(df_input)
+        num_batches = (total_rows + BATCH_SIZE - 1) // BATCH_SIZE
+        all_results: List[pd.DataFrame] = []
+        for batch_num in range(num_batches):
+            start_idx = batch_num * BATCH_SIZE
+            end_idx = min((batch_num + 1) * BATCH_SIZE, total_rows)
+            df_batch = df_input.iloc[start_idx:end_idx].copy()
+            batch_nan_path = (
+                OUTPUT_FOLDER
+                / f"batch_{source_label}_{batch_num+1:03d}_turbine_matching.xlsx"
+            )
+            result_df, _ = run_enervis_calculation(
+                df_batch,
+                anemos,
+                turbine_ref,
+                batch_nan_path,
+                batch_info=f"{source_label} batch {batch_num+1:03d}",
+            )
+            if result_df is not None and not result_df.empty:
+                all_results.append(result_df)
+        return (
+            pd.concat(all_results, ignore_index=True) if all_results else pd.DataFrame()
+        )
+
+    enervis_results_generator_details = _run_enervis_for_df(
+        df_wind_from_generator_details, "generator-details"
+    )
+    enervis_results_stammdaten = _run_enervis_for_df(
+        df_wind_from_stammdaten, "stammdaten"
+    )
+
+    enervis_results_fallback = pd.DataFrame()
+
+    if not df_wind_from_generator_details.empty or not df_wind_from_stammdaten.empty:
+        malos_to_retry: List[str] = []
+        year_cols = [f"enervis_{year}" for year in TARGET_YEARS]
+        existing_year_cols = [
+            col for col in year_cols if col in enervis_results_generator_details.columns
+        ]
+
+        if existing_year_cols and not enervis_results_generator_details.empty:
+            mask_all_nan = (
+                enervis_results_generator_details[existing_year_cols].isna().all(axis=1)
+            )
+            malos_to_retry.extend(
+                enervis_results_generator_details.loc[mask_all_nan, "malo"]
+                .astype(str)
+                .tolist()
             )
 
-    elif df_assets_see_enriched is not None:
+        if "malo" in df_wind_from_generator_details.columns:
+            generator_malos = set(
+                df_wind_from_generator_details["malo"].astype(str).str.strip().tolist()
+            )
+            result_malos = (
+                set(
+                    enervis_results_generator_details["malo"]
+                    .astype(str)
+                    .str.strip()
+                    .tolist()
+                )
+                if not enervis_results_generator_details.empty
+                else set()
+            )
+            malos_to_retry.extend(list(generator_malos - result_malos))
 
-        print("Using SEE results only")
+        malos_to_retry = list(set(malos_to_retry))
+        print(
+            f"\n🍌🍌🍌Retrying {len(malos_to_retry)} malo(s) with stammdaten fallback..."
+        )
+        print(
+            f"   Malos to retry: {malos_to_retry[:20]}{'...' if len(malos_to_retry) > 20 else ''}"
+        )
 
-        df_assets_enriched = df_assets_see_enriched
+        if (
+            malos_to_retry
+            and not df_wind_from_stammdaten.empty
+            and "malo" in df_wind_from_stammdaten.columns
+        ):
+            df_wind_from_stammdaten["malo"] = (
+                df_wind_from_stammdaten["malo"].astype(str).str.strip()
+            )
+            df_fallback = df_wind_from_stammdaten[
+                df_wind_from_stammdaten["malo"].isin(malos_to_retry)
+            ].copy()
+            enervis_results_fallback = _run_enervis_for_df(
+                df_fallback, "stammdaten-fallback"
+            )
 
-    elif df_assets_nonsee_enervis_enriched is not None:
+    all_results: List[pd.DataFrame] = []
+    if not enervis_results_generator_details.empty:
+        tmp = enervis_results_generator_details.copy()
+        tmp["source"] = "generator-details"
+        all_results.append(tmp)
+    if not enervis_results_fallback.empty:
+        tmp = enervis_results_fallback.copy()
+        tmp["source"] = "stammdaten-fallback"
+        all_results.append(tmp)
+    if not enervis_results_stammdaten.empty:
+        tmp = enervis_results_stammdaten.copy()
+        tmp["source"] = "stammdaten"
+        all_results.append(tmp)
 
-        print("Using non-SEE results only")
+    if all_results:
+        df_all = pd.concat(all_results, ignore_index=True)
+        df_all["malo"] = df_all["malo"].astype(str).str.strip()
 
-        df_assets_enriched = df_assets_nonsee_enervis_enriched
+        # Define Enervis columns to average
+        enervis_cols_to_avg = [f"enervis_{y}" for y in TARGET_YEARS] + ["avg_enervis"]
+        existing_enervis_cols = [c for c in enervis_cols_to_avg if c in df_all.columns]
 
+        # Build aggregation dictionary
+        agg_dict = {}
+
+        # Each column needs its own lambda to avoid closure issues
+        for col in existing_enervis_cols:
+            agg_dict[col] = lambda x, col=col: x.mean(skipna=True)
+
+        # Keep first value for other columns
+        other_cols = [
+            c
+            for c in df_all.columns
+            if c not in ["malo"] + existing_enervis_cols + ["source"]
+        ]
+        for col in other_cols:
+            agg_dict[col] = "first"
+
+        # Group by malo and aggregate
+        df_best = df_all.groupby("malo", dropna=False).agg(agg_dict).reset_index()
+
+        enervis_results = df_best
+
+        # Drop Enervis columns where all rows are null
+        enervis_cols_to_check = [f"enervis_{y}" for y in TARGET_YEARS] + ["avg_enervis"]
+        for col in enervis_cols_to_check:
+            if col in enervis_results.columns and enervis_results[col].isna().all():
+                enervis_results = enervis_results.drop(columns=[col])
     else:
+        enervis_results = pd.DataFrame()
 
-        print("No Enervis results, using stammdaten aggregation only")
-        df_assets_enriched = aggregate_stammdaten_by_malo(df_stamm)
+    df_units_enriched = df_stamm.copy()
+
+    # merging units stammdaten with blindleister per unit
+    if not blindleister_results.empty and "unit_mastr_id" in df_units_enriched.columns:
+        df_units_enriched = df_units_enriched.merge(
+            blindleister_results, on="unit_mastr_id", how="left"
+        )
+
+    # merging units stammdaten with enervis per malo
+    if not enervis_results.empty and "malo" in df_units_enriched.columns:
+        df_units_enriched["malo"] = df_units_enriched["malo"].astype(str).str.strip()
+        enervis_results["malo"] = enervis_results["malo"].astype(str).str.strip()
+        df_units_enriched = df_units_enriched.merge(
+            enervis_results, on="malo", how="left"
+        )
+
+    # aggregate per malo
+    df_assets_enriched = aggregate_stammdaten_by_malo(df_units_enriched)
+    if (
+        "tech" in df_assets_enriched.columns
+        and "Technology" not in df_assets_enriched.columns
+    ):
         df_assets_enriched = df_assets_enriched.rename(columns={"tech": "Technology"})
 
-    # =========================================================================
+    # =============================================================================
+    # STEP 5: PRODUCTION DATA (if present)
+    # =============================================================================
 
-    # STEP 5: Check for production data
-
-    # =========================================================================
-
-    xls = pd.ExcelFile(path, engine="openpyxl")
-
+    xls = pd.ExcelFile(input_path, engine="openpyxl")
     sheet_names = xls.sheet_names
     has_production = len(sheet_names) > 1 and sheet_names[0].lower() == "stammdaten"
 
     if not has_production:
-
-        print_header("STEP 5: NO PRODUCTION DATA - GENERATING SIMPLE REPORT")
-
-        # Generate output sheets
-
+        print_header("STEP 5: NO PRODUCTION DATA - GENERATING REPORT")
+        df_assets_enriched = normalize_nan_strings(df_assets_enriched)
         sheet1, sheet2, sheet3 = generate_output_sheets(
             df_assets_enriched, has_production=False, has_forecast=False
         )
 
-        # Save to Excel
+        customer_name = input_path.stem.split("_", 1)[0]
 
-        customer_name = os.path.basename(os.path.dirname(out_path))
+        sh1 = sanitize_sheet_name(f"{customer_name}_1")
+        sh2 = sanitize_sheet_name(f"{customer_name}_2")
+        sh3 = sanitize_sheet_name(f"{customer_name}_3")
+
         with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
-            sheet1.to_excel(writer, sheet_name=f"{customer_name}_1", index=False)
-            sheet2.to_excel(writer, sheet_name=f"{customer_name}_2", index=False)
-            sheet3.to_excel(writer, sheet_name=f"{customer_name}_3", index=False)
-
-        format_excel_output(out_path)
-
+            sheet1.to_excel(writer, sheet_name=sh1, index=False, na_rep="")
+            sheet2.to_excel(writer, sheet_name=sh2, index=False, na_rep="")
+            sheet3.to_excel(writer, sheet_name=sh3, index=False, na_rep="")
+        format_excel_output(str(out_path))
         print_header("PIPELINE COMPLETE")
-
         print(f"✅ Output saved to {out_path}")
-        # print(f"✅ Formatted output saved to {out_path_highlighted}")
-
         return
 
-    # =========================================================================
+    print_header("STEP 5: PRODUCTION DATA FOUND - PROCESSING")
 
-    # STEP 6: Process production data (time series)
-
-    # =========================================================================
-
-    print_header("STEP 6: PROCESSING PRODUCTION DATA")
-
-    # Load production sheets
+    if load_workbook is None:
+        raise RuntimeError("openpyxl is required for production Excel processing")
 
     sheets = [
         s
@@ -3082,55 +3728,39 @@ def main():
         not in [
             "stammdaten",
             "curtailment",
+            "unprocessed",
             "redispatch_wind",
             "redispatch_pv",
             "redispatch",
         ]
     ]
 
-    batch_size = 5
-
     merged = []
-
+    batch_size = 5
     for i in range(0, len(sheets), batch_size):
-
         batch = sheets[i : i + batch_size]
-
         dfs = []
-
         for sh in batch:
-
-            df_tmp = pd.read_excel(path, sheet_name=sh, engine="openpyxl")
-
+            df_tmp = pd.read_excel(input_path, sheet_name=sh, engine="openpyxl")
             df_tmp.columns = df_tmp.columns.str.strip()
-
             if "malo" in df_tmp.columns:
-
                 df_tmp["malo"] = df_tmp["malo"].astype(str).str.strip()
-
             dfs.append(df_tmp)
-
         merged.append(pd.concat(dfs, ignore_index=True))
-
         del dfs
-
         gc.collect()
 
     df_production_raw = pd.concat(merged, ignore_index=True)
-
     del merged
-
     gc.collect()
 
     df_production_raw.columns = df_production_raw.columns.str.strip()
     df_production_raw["malo"] = df_production_raw["malo"].astype(str).str.strip()
-
-    # Process time column
     df_production_raw = process_time_column(df_production_raw)
 
-    # Filter by completeness
-    df_production_filtered = filter_production_data_by_completeness(df_production_raw)
-
+    df_production_filtered = filter_production_data_by_completeness(
+        df_production_raw, debug=True
+    )
     if df_production_filtered.empty:
         print("❌ No valid production data after filtering")
         return
@@ -3138,39 +3768,32 @@ def main():
     def custom_power_mwh(group):
         if group.nunique() == 1:
             return group.mean()
-        else:
-            return group.sum()
+        return group.sum()
 
     grouped = df_production_filtered.groupby(
         ["malo", "time_berlin", "available_years", "available_months"]
     )
-
-    del df_production_filtered
-    gc.collect()
-
     df_production_filtered = grouped["power_kwh"].apply(custom_power_mwh).reset_index()
-
-    del grouped
-    gc.collect()
-    # Rename power column
-
     df_production_filtered.rename(columns={"power_kwh": "infeed_kwh"}, inplace=True)
     df_production_filtered["__adj_kwh"] = 0.0
 
-    # Load curtailment/redispatch if available
-
-    wb = load_workbook(path, read_only=True)
-
+    wb = load_workbook(input_path, read_only=True)
     available_sheets = wb.sheetnames
-
     wb.close()
 
     if "redispatch" in available_sheets:
-        df_redispatch = pd.read_excel(path, sheet_name="redispatch", engine="openpyxl")
+        df_redispatch = pd.read_excel(
+            input_path, sheet_name="redispatch", engine="openpyxl"
+        )
         df_redispatch.columns = df_redispatch.columns.str.strip()
         df_redispatch["malo"] = df_redispatch["malo"].astype(str).str.strip()
-
         df_redispatch = process_time_column(df_redispatch)
+
+        # Apply custom_power_mwh aggregation
+        grouped_redispatch = df_redispatch.groupby(["malo", "time_berlin"])
+        df_redispatch = (
+            grouped_redispatch["redispatch_kwh"].apply(custom_power_mwh).reset_index()
+        )
 
         df_production_filtered = pd.merge(
             df_production_filtered,
@@ -3178,22 +3801,23 @@ def main():
             on=["malo", "time_berlin"],
             how="left",
         )
-
         df_production_filtered["__adj_kwh"] = df_production_filtered[
             "__adj_kwh"
         ] + df_production_filtered["redispatch_kwh"].fillna(0)
 
     if "curtailment" in available_sheets:
-
         df_curtailment = pd.read_excel(
-            path, sheet_name="curtailment", engine="openpyxl"
+            input_path, sheet_name="curtailment", engine="openpyxl"
         )
-
         df_curtailment.columns = df_curtailment.columns.str.strip()
-
         df_curtailment["malo"] = df_curtailment["malo"].astype(str).str.strip()
-
         df_curtailment = process_time_column(df_curtailment)
+
+        # Apply custom_power_mwh aggregation
+        grouped_curtailment = df_curtailment.groupby(["malo", "time_berlin"])
+        df_curtailment = (
+            grouped_curtailment["curtailment_kwh"].apply(custom_power_mwh).reset_index()
+        )
 
         df_production_filtered = pd.merge(
             df_production_filtered,
@@ -3201,191 +3825,122 @@ def main():
             on=["malo", "time_berlin"],
             how="left",
         )
-
         df_production_filtered["curtailment_kwh"] = df_production_filtered[
             "curtailment_kwh"
         ].fillna(0)
-
         df_production_filtered["__adj_kwh"] = (
             df_production_filtered["__adj_kwh"]
             + df_production_filtered["curtailment_kwh"]
         )
-
         df_production_filtered["curtailment"] = df_production_filtered["malo"].isin(
             df_curtailment["malo"]
         )
 
+    # Ensure optional adjustment columns always exist (so forecasting can run for all malos)
+    if "redispatch_kwh" not in df_production_filtered.columns:
+        df_production_filtered["redispatch_kwh"] = 0.0
+    if "curtailment_kwh" not in df_production_filtered.columns:
+        df_production_filtered["curtailment_kwh"] = 0.0
+    if "curtailment" not in df_production_filtered.columns:
+        df_production_filtered["curtailment"] = False
+
     df_production_filtered["infeed_kwh"] = pd.to_numeric(
         df_production_filtered["infeed_kwh"], errors="coerce"
     )
-
     df_production_filtered["__adj_kwh"] = pd.to_numeric(
         df_production_filtered["__adj_kwh"], errors="coerce"
     )
-
+    df_production_filtered["redispatch_kwh"] = pd.to_numeric(
+        df_production_filtered["redispatch_kwh"], errors="coerce"
+    ).fillna(0)
+    df_production_filtered["curtailment_kwh"] = pd.to_numeric(
+        df_production_filtered["curtailment_kwh"], errors="coerce"
+    ).fillna(0)
     df_production_filtered["power_kwh"] = (
         df_production_filtered["infeed_kwh"] + df_production_filtered["__adj_kwh"]
     )
 
-    # =========================================================================
-
-    # STEP 7: Merge with price data and calculate deltas
-
-    # =========================================================================
-
-    print_header("STEP 7: MERGING WITH PRICE DATA")
-
-    # Load day-ahead and RMV prices
-
+    print_header("STEP 6: MERGING WITH PRICE DATA")
     df_dayahead_prices = load_day_ahead_prices(DAY_AHEAD_PRICE_PATH)
-
     df_rmv_prices = load_rmv_prices(RMV_PRICE_PATH)
-
-    # Expand hourly to quarter-hourly
     df_dayahead_prices_qh = expand_hourly_to_quarter_hourly(df_dayahead_prices)
 
-    # Aggregate production
-    grouped = df_production_filtered.groupby(
-        ["malo", "time_berlin", "available_years", "available_months"]
-    )
-
-
-
-    df_production_qh_agg = grouped["power_kwh"].apply(custom_power_mwh).reset_index()
-
-    # Merge with assets mapping
-
-    pattern = r"\d+.*rules"
+    # Keep base components so forecast can be applied as: infeed + redispatch + forecasted curtailment
+    df_production_qh_agg = df_production_filtered[
+        [
+            "malo",
+            "time_berlin",
+            "available_years",
+            "available_months",
+            "infeed_kwh",
+            "redispatch_kwh",
+            "curtailment_kwh",
+            "power_kwh",
+            "curtailment",
+        ]
+    ].copy()
 
     df_temp = df_stamm.copy()
-
-    df_temp["_sort_priority"] = df_temp["category"].str.contains(pattern, na=False)
-
+    pattern = r"\d+.*rules"
+    df_temp["_sort_priority"] = (
+        df_temp.get("category", "").astype(str).str.contains(pattern, na=False)
+    )
     df_sorted = df_temp.sort_values(["malo", "_sort_priority"], ascending=[True, False])
 
     df_assets_mapping = (
         df_sorted.groupby(["malo"], dropna=False)
-        .agg(
-            {
-                "tech": "first",
-                "net_power_kw_unit": "sum",
-                "category": "first",
-            }
-        )
+        .agg({"tech": "first", "net_power_kw_unit": "sum", "category": "first"})
         .reset_index()
     )
-
     df_production_qh_agg = df_production_qh_agg.merge(
         df_assets_mapping, on="malo", how="left"
     )
+    df_production_qh_agg.rename(
+        columns={"net_power_kw_unit": "sum_power_kw_malo"}, inplace=True
+    )
 
-    # Merge with day-ahead prices
     df_prod_with_dayahead = pd.merge(
         df_production_qh_agg, df_dayahead_prices_qh, on="time_berlin", how="inner"
     )
-
-    # Add year/month
     df_prod_with_dayahead["year"] = df_prod_with_dayahead["time_berlin"].dt.year.astype(
         "int16"
     )
-
     df_prod_with_dayahead["month"] = df_prod_with_dayahead[
         "time_berlin"
     ].dt.month.astype("int8")
-
     df_prod_with_dayahead["tech"] = (
-        df_prod_with_dayahead["tech"].str.strip().str.upper().astype("category")
+        df_prod_with_dayahead["tech"]
+        .astype(str)
+        .str.strip()
+        .str.upper()
+        .astype("category")
     )
-
-    # Merge with RMV
 
     df_prod_with_prices = df_prod_with_dayahead.merge(
-        df_rmv_prices,
-        on=["tech", "year", "month"],
-        how="left",
+        df_rmv_prices, on=["tech", "year", "month"], how="left"
     )
-
-    # Calculate delta (keep power_kwh name for consistency)
-
     df_prod_with_prices_dedup = df_prod_with_prices.drop_duplicates(
         subset=["malo", "time_berlin", "power_kwh"]
     )
 
-    df_prod_with_prices_dedup["deltaspot_eur"] = (
-        df_prod_with_prices_dedup["power_kwh"]
-        * df_prod_with_prices_dedup["dayaheadprice"]
-        / 1000
-    ) - (
-        df_prod_with_prices_dedup["power_kwh"]
-        * df_prod_with_prices_dedup["monthly_reference_market_price_eur_mwh"]
-        / 1000
-    )
+    base_prod_delta = process_production_data(df_prod_with_prices_dedup)
+    df_weighted_delta_by_malo = base_prod_delta["weighted_delta_permalo"].copy()
+    df_capacity_inputs_by_malo = base_prod_delta["year_agg"].copy()
 
-    # Calculate weighted delta per malo
-
-    df_weighted_delta_by_malo = (
-        df_prod_with_prices_dedup.groupby(["malo"])
-        .agg(
-            total_prod_kwh_malo=("power_kwh", "sum"),
-            spot_rmv_eur_malo=("deltaspot_eur", "sum"),
-        )
-        .reset_index()
-    )
-
-    df_weighted_delta_by_malo["weighted_delta_permalo"] = (
-        df_weighted_delta_by_malo["spot_rmv_eur_malo"]
-        / (df_weighted_delta_by_malo["total_prod_kwh_malo"] / 1000)
-    ).round(2)
-
-    # Calculate capacity factors
-
-    total_prod = df_prod_with_prices_dedup.groupby(["malo"])["power_kwh"].sum()
-
-    df_monthly_delta = (
-        df_prod_with_prices_dedup.groupby(["year", "month", "malo"])
-        .agg(
-            deltaspot_eur_monthly=("deltaspot_eur", "sum"),
-            available_months=("available_months", "first"),
-            available_years=("available_years", "first"),
-        )
-        .reset_index()
-    )
-
-    df_monthly_delta["total_prod_kwh"] = df_monthly_delta["malo"].map(total_prod)
-
-    df_monthly_delta["total_prod_mwh"] = df_monthly_delta["total_prod_kwh"] / 1000
-
-    df_capacity_inputs_by_malo = (
-        df_monthly_delta.groupby(["malo"], dropna=False)
-        .agg(
-            available_months=("available_months", "first"),
-            available_years=("available_years", "first"),
-            total_prod_mwh=("total_prod_mwh", "first"),
-        )
-        .reset_index()
-    )
-
-    # Merge with main data
-
-    for df in [
+    for dfx in [
         df_assets_enriched,
         df_weighted_delta_by_malo,
         df_capacity_inputs_by_malo,
     ]:
+        dfx["malo"] = dfx["malo"].astype(str).str.strip()
 
-        df["malo"] = df["malo"].astype(str).str.strip()
-
-    df_assets_with_weighted_delta = pd.merge(
-        df_assets_enriched,
-        df_weighted_delta_by_malo[
-            ["malo", "weighted_delta_permalo", "total_prod_kwh_malo"]
-        ],
+    df_assets_with_weighted_delta = df_assets_enriched.merge(
+        df_weighted_delta_by_malo[["malo", "weighted_delta_permalo"]],
         on="malo",
         how="left",
     )
-
-    df_assets_with_production_metrics = pd.merge(
-        df_assets_with_weighted_delta, df_capacity_inputs_by_malo, on="malo", how="left"
+    df_assets_with_production_metrics = df_assets_with_weighted_delta.merge(
+        df_capacity_inputs_by_malo, on="malo", how="left"
     )
 
     df_assets_with_production_metrics["denominator"] = (
@@ -3393,7 +3948,6 @@ def main():
         * df_assets_with_production_metrics["available_months"]
         * 730
     )
-
     df_assets_with_production_metrics["denominator"] = (
         df_assets_with_production_metrics["denominator"].replace(0, float("nan"))
     )
@@ -3405,79 +3959,90 @@ def main():
     ).round(2)
 
     # =========================================================================
-
     # STEP 8: ML CURTAILMENT FORECASTING (if data for 2023-2025)
-
     # =========================================================================
 
     print_header("STEP 8: CHECKING FOR CURTAILMENT FORECASTING")
 
-    # Check if we have recent data for forecasting
+    df_forecast_weighted_delta_by_malo: Optional[pd.DataFrame] = None
+    df_forecast_capacity_inputs_by_malo: Optional[pd.DataFrame] = None
+    df_cf_compare: Optional[pd.DataFrame] = None
 
     has_recent_data = (
         df_prod_with_prices["time_berlin"].dt.year.isin([2023, 2024, 2025]).any()
     )
 
-    df_out_process = None
-    forecast_curt_weighted_delta_permalo = None
-    forecast_curt_year_agg = None
-
-    if has_recent_data:
-
-        print("✅ Recent data (2023-2025) found, proceeding with ML forecasting")
-
-        # Filter to 2023-2025 (keep power_kwh column name)
+    if not ENABLE_FORECASTING:
+        print("ℹ️ Forecasting disabled via ENABLE_FORECASTING=0")
+    elif not has_recent_data:
+        print("ℹ️ No recent data (2023-2025) for curtailment forecasting")
+    else:
+        print("✅ Recent data (2023-2025) found, proceeding with forecasting")
 
         df_forecast_input = df_prod_with_prices[
-            df_prod_with_prices["time_berlin"].dt.year.isin([2023, 2024, 2025])
+            df_prod_with_prices["time_berlin"].dt.year.isin([2023, 2024, 2025, 2026])
         ].copy()
 
-        # Exclude malos with curtailment flag (already have curtailment data)
-
+        # Track malos with actual curtailment data (for validation metrics)
+        curtailed_malos: List[str] = []
         if "curtailment" in df_production_filtered.columns:
-
-            curtailed_malos = df_production_filtered[
-                df_production_filtered["curtailment"]
-            ]["malo"].unique()
-
-            df_forecast_input = df_forecast_input[
-                ~df_forecast_input["malo"].isin(curtailed_malos)
-            ]
-
-            print(
-                f"ℹ️ Excluded {len(curtailed_malos)} malos with existing curtailment data"
+            curtailed_malos = (
+                df_production_filtered[df_production_filtered["curtailment"]]["malo"]
+                .unique()
+                .tolist()
             )
 
-        if not df_forecast_input.empty:
+        df_forecast_input["has_actual_curtailment"] = df_forecast_input["malo"].isin(
+            curtailed_malos
+        )
+        print(
+            f"ℹ️ Found {len(curtailed_malos)} malos with existing curtailment data (will use for validation)"
+        )
 
+        # Provide actual labels only for malos where curtailment is available.
+        # This prevents classification/regression metrics from being contaminated by rows without labels.
+        if "curtailment_kwh" in df_forecast_input.columns:
+            df_forecast_input["curtailment_kwh"] = pd.to_numeric(
+                df_forecast_input["curtailment_kwh"], errors="coerce"
+            ).fillna(0)
+        else:
+            df_forecast_input["curtailment_kwh"] = 0.0
+
+        if "sum_power_kw_malo" in df_forecast_input.columns:
+            denom_kw = pd.to_numeric(
+                df_forecast_input["sum_power_kw_malo"], errors="coerce"
+            )
+        else:
+            denom_kw = pd.Series(np.nan, index=df_forecast_input.index)
+
+        # only for malos with actual curtailment data
+        df_forecast_input["curtailment_kWh_per_kw"] = np.where(
+            df_forecast_input["has_actual_curtailment"] & denom_kw.gt(0),
+            df_forecast_input["curtailment_kwh"] / denom_kw,
+            np.nan,
+        )
+
+        if df_forecast_input.empty:
+            print("ℹ️ No data available for forecasting after filtering")
+        else:
             try:
-
-                # Fetch forecast table from BigQuery
+                if pandas_gbq is None:
+                    raise RuntimeError(
+                        "pandas_gbq not available; cannot fetch forecast features"
+                    )
 
                 print("Fetching forecast features from BigQuery...")
-
-                forecast_table_query = """
-
+                forecast_table_query = f"""
                 SELECT *
-
-                FROM `flex-power.sales.price_volume_data_for_curtailment_forecast_table`
-
+                FROM `{CURTAILMENT_FORECAST_TABLE}`
                 ORDER BY delivery_start_berlin
-
                 """
-
                 df_forecast_features = pandas_gbq.read_gbq(
                     forecast_table_query, project_id=PROJECT_ID
                 )
-
                 df_forecast_features["delivery_start_berlin"] = pd.to_datetime(
                     df_forecast_features["delivery_start_berlin"], errors="coerce"
                 )
-
-                # Merge forecast features (avoid column name conflicts)
-
-                # Keep only columns from forecast table that don't exist in
-                # df_forecast_input
 
                 forecast_feature_cols = [
                     col
@@ -3495,12 +4060,6 @@ def main():
 
                 print(f"✅ Merged forecast features: {len(df_forecast_input)} rows")
 
-                print(
-                    f"ℹ️ Forecast input has power_kwh column: {'power_kwh' in df_forecast_input.columns}"
-                )
-
-                # Run ML forecasting pipeline
-
                 results = run_curtailment_forecast_multi_category(
                     df_ts=df_forecast_input,
                     plot_class=False,
@@ -3508,45 +4067,207 @@ def main():
                 )
 
                 if results is not None:
-
-                    df_curtailment_forecast_predictions = results["combined"]
-
+                    df_curtailment_forecast_predictions = results["combined"].copy()
                     print(
                         f"✅ Curtailment forecasting complete: {len(df_curtailment_forecast_predictions)} predictions"
                     )
 
-                    # Save forecast results
-
-                    save_multisheet_excel(
-                        df_curtailment_forecast_predictions,
-                        str(folder / "df_out_forecast_results.xlsx"),
+                    df_curtailment_forecast_predictions.rename(
+                        columns={"dayaheadprice_eur_mwh": "dayaheadprice"},
+                        inplace=True,
                     )
 
-                    # Process forecast data
+                    # Only apply forecast curtailment to malos that DON'T have actual curtailment data
+                    # For malos with actual curtailment, keep the original power_kwh
+                    if (
+                        "has_actual_curtailment"
+                        not in df_curtailment_forecast_predictions.columns
+                    ):
+                        df_curtailment_forecast_predictions[
+                            "has_actual_curtailment"
+                        ] = False
 
-                    df_curtailment_forecast_predictions.rename(
-                        columns={"dayaheadprice_eur_mwh": "dayaheadprice"}, inplace=True
+                    df_curtailment_forecast_predictions[
+                        "raw_curtailment_forecast_kwh"
+                    ] = (
+                        df_curtailment_forecast_predictions[
+                            "predicted_curtailment_kWh_per_kw"
+                        ]
+                        * df_curtailment_forecast_predictions["sum_power_kw_malo"]
+                    )
+
+                    df_curtailment_forecast_predictions["curtailment_forecast_kwh"] = (
+                        np.minimum(
+                            df_curtailment_forecast_predictions[
+                                "raw_curtailment_forecast_kwh"
+                            ],
+                            df_curtailment_forecast_predictions["sum_power_kw_malo"]
+                            * 0.8
+                            * 0.25,
+                        )
                     )
 
                     df_curtailment_forecast_predictions["curtailment_forecast_kwh"] = (
                         df_curtailment_forecast_predictions[
-                            "predicted_curtailment_kWh_per_kw"
-                        ]
-                        * df_curtailment_forecast_predictions["net_power_kw_unit"]
+                            "curtailment_forecast_kwh"
+                        ].clip(lower=0)
                     )
 
-                    df_curtailment_forecast_predictions["power_kwh"] = (
-                        df_curtailment_forecast_predictions["power_kwh"]
-                        + df_curtailment_forecast_predictions[
-                            "curtailment_forecast_kwh"
-                        ]
+                    # Forecasted production is always built from the unadjusted base components:
+                    # infeed_kwh (measured) + redispatch_kwh + forecasted curtailment
+                    # This matches your requirement: for malos with curtailment data, add forecast to infeed (not to already-adjusted power).
+                    if "infeed_kwh" not in df_curtailment_forecast_predictions.columns:
+                        raise RuntimeError(
+                            "Missing 'infeed_kwh' in forecast predictions; cannot build forecast production"
+                        )
+                    if (
+                        "redispatch_kwh"
+                        not in df_curtailment_forecast_predictions.columns
+                    ):
+                        df_curtailment_forecast_predictions["redispatch_kwh"] = 0.0
+
+                    df_curtailment_forecast_predictions["raw_power_kwh_forecast"] = (
+                        pd.to_numeric(
+                            df_curtailment_forecast_predictions["infeed_kwh"],
+                            errors="coerce",
+                        ).fillna(0)
+                        + pd.to_numeric(
+                            df_curtailment_forecast_predictions["redispatch_kwh"],
+                            errors="coerce",
+                        ).fillna(0)
+                        + pd.to_numeric(
+                            df_curtailment_forecast_predictions[
+                                "curtailment_forecast_kwh"
+                            ],
+                            errors="coerce",
+                        ).fillna(0)
+                    )
+
+                    # Cap forecasted production by 80% of quarter-hour installed capacity
+                    df_curtailment_forecast_predictions["power_kwh_forecast"] = (
+                        np.minimum(
+                            df_curtailment_forecast_predictions[
+                                "raw_power_kwh_forecast"
+                            ],
+                            df_curtailment_forecast_predictions["sum_power_kw_malo"]
+                            * 0.85
+                            * 0.25,
+                        )
+                    )
+
+                    # For rows with actual curtailment context, keep original measured power when it is higher
+                    df_curtailment_forecast_predictions["power_kwh_forecast"] = (
+                        np.where(
+                            df_curtailment_forecast_predictions["power_kwh_forecast"]
+                            < df_curtailment_forecast_predictions["power_kwh"],
+                            df_curtailment_forecast_predictions["power_kwh"],
+                            df_curtailment_forecast_predictions["power_kwh_forecast"],
+                        )
+                    )
+
+                    save_multisheet_excel(
+                        df_curtailment_forecast_predictions,
+                        str(out_path.parent / "df_out_forecast_results.xlsx"),
+                    )
+
+                    if plt is not None:
+                        df_plot = df_curtailment_forecast_predictions.copy()
+                        df_plot["time_berlin"] = pd.to_datetime(
+                            df_plot["time_berlin"], errors="coerce"
+                        )
+                        df_plot = df_plot[df_plot["time_berlin"].notna()].copy()
+
+                        total_prod_plot_col = None
+                        if "total_prod_kwh" in df_plot.columns:
+                            total_prod_plot_col = "total_prod_kwh"
+                        elif "power_kwh" in df_plot.columns:
+                            df_plot["total_prod_kwh"] = pd.to_numeric(
+                                df_plot["power_kwh"], errors="coerce"
+                            )
+                            total_prod_plot_col = "total_prod_kwh"
+                            print(
+                                "ℹ️ 'total_prod_kwh' not found; using 'power_kwh' as total production for plotting"
+                            )
+
+                        if total_prod_plot_col is None:
+                            print(
+                                "⚠️ Skipping forecast plots: neither 'total_prod_kwh' nor 'power_kwh' available"
+                            )
+                        else:
+                            plot_dir = out_path.parent / "forecast_plots_by_malo"
+                            plot_dir.mkdir(parents=True, exist_ok=True)
+
+                            for malo, group in df_plot.groupby("malo", dropna=False):
+                                group = group.sort_values("time_berlin").copy()
+                                group["power_kwh_forecast"] = pd.to_numeric(
+                                    group["power_kwh_forecast"], errors="coerce"
+                                )
+                                group[total_prod_plot_col] = pd.to_numeric(
+                                    group[total_prod_plot_col], errors="coerce"
+                                )
+
+                                fig, ax = plt.subplots(figsize=(14, 5))
+                                ax.plot(
+                                    group["time_berlin"],
+                                    group["power_kwh_forecast"],
+                                    label="prod_forecast_kwh",
+                                    linewidth=1.4,
+                                )
+                                ax.plot(
+                                    group["time_berlin"],
+                                    group[total_prod_plot_col],
+                                    label="client_data_kwh",
+                                    linewidth=1.0,
+                                    alpha=0.8,
+                                )
+                                ax.set_title(
+                                    f"malo={malo} | Forecast vs Client data Production"
+                                )
+                                ax.set_xlabel("time_berlin")
+                                ax.set_ylabel("kWh")
+                                ax.legend()
+                                ax.grid(True, alpha=0.25)
+                                fig.autofmt_xdate()
+                                fig.tight_layout()
+
+                                safe_malo = re.sub(r"[^A-Za-z0-9._-]+", "_", str(malo))
+                                fig.savefig(
+                                    plot_dir
+                                    / f"forecast_vs_total_prod_{safe_malo}.png",
+                                    dpi=140,
+                                )
+                                plt.close(fig)
+
+                            print(f"✅ Saved per-malo forecast plots to {plot_dir}")
+                    else:
+                        print(
+                            "ℹ️ matplotlib not available; skipping per-malo forecast plots"
+                        )
+
+                    # malos_with_actual = int(df_curtailment_forecast_predictions["has_actual_curtailment"].any())
+
+                    n_malos_with_actual = df_curtailment_forecast_predictions.loc[
+                        df_curtailment_forecast_predictions["has_actual_curtailment"],
+                        "malo",
+                    ].nunique()
+
+                    n_malos_without_actual = df_curtailment_forecast_predictions.loc[
+                        ~df_curtailment_forecast_predictions["has_actual_curtailment"],
+                        "malo",
+                    ].nunique()
+
+                    print(
+                        f"🦪🦪 Forecast computed for {n_malos_without_actual} malos without actual curtailment (used for forecast outputs)"
+                    )
+                    print(
+                        f"🦪🦪🦪 Forecast computed for {n_malos_with_actual} malos with actual curtailment (used for forecast outputs + validation metrics)"
                     )
 
                     df_forecast_prod_for_metrics = df_curtailment_forecast_predictions[
                         [
                             "malo",
                             "time_berlin",
-                            "power_kwh",
+                            "power_kwh_forecast",
                             "dayaheadprice",
                             "monthly_reference_market_price_eur_mwh",
                             "available_years",
@@ -3556,21 +4277,27 @@ def main():
                         ]
                     ]
 
-                    # Process forecast production data
-
                     forecast_curt_delta = process_production_data(
-                        df_forecast_prod_for_metrics, folder
+                        df_forecast_prod_for_metrics
+                    )
+
+                    monthly_compare_path = (
+                        out_path.parent
+                        / "monthly_weighted_delta_original_vs_forecast.xlsx"
+                    )
+                    build_monthly_weighted_delta_comparison(
+                        df_original=df_prod_with_prices_dedup,
+                        df_forecast=df_forecast_prod_for_metrics,
+                        output_path=monthly_compare_path,
                     )
 
                     df_forecast_weighted_delta_by_malo = forecast_curt_delta[
                         "weighted_delta_permalo"
-                    ]
+                    ].copy()
 
                     df_forecast_capacity_inputs_by_malo = forecast_curt_delta[
                         "year_agg"
-                    ]
-
-                    # Rename columns
+                    ].copy()
 
                     df_forecast_weighted_delta_by_malo.rename(
                         columns={
@@ -3590,47 +4317,30 @@ def main():
                     )
 
                     print("✅ Forecast data processed and ready for merge")
+                else:
+                    print("ℹ️ Forecast pipeline returned no results")
 
             except Exception as e:
-
                 print(f"⚠️ Curtailment forecasting failed: {str(e)}")
-
                 print("Continuing without forecast data...")
 
-        else:
-
-            print("ℹ️ No data available for forecasting after filtering")
-
-    else:
-
-        print("ℹ️ No recent data (2023-2025) for curtailment forecasting")
-
     # =========================================================================
-
-    # STEP 9: Merge forecast results with main data
-
+    # STEP 9: Merge forecast results
     # =========================================================================
 
     if (
-        "df_forecast_weighted_delta_by_malo" in locals()
-        and "df_forecast_capacity_inputs_by_malo" in locals()
-        and df_forecast_weighted_delta_by_malo is not None
+        df_forecast_weighted_delta_by_malo is not None
         and df_forecast_capacity_inputs_by_malo is not None
     ):
-
         print_header("STEP 9: MERGING FORECAST RESULTS")
 
-        # Ensure malo is string
-
-        for df in [
+        for dfx in [
             df_forecast_weighted_delta_by_malo,
             df_forecast_capacity_inputs_by_malo,
         ]:
+            dfx["malo"] = dfx["malo"].astype(str).str.strip()
 
-            df["malo"] = df["malo"].astype(str).str.strip()
-
-        df_assets_with_forecast_delta = pd.merge(
-            df_assets_with_production_metrics,
+        df_assets_with_forecast_delta = df_assets_with_production_metrics.merge(
             df_forecast_weighted_delta_by_malo[
                 [
                     "malo",
@@ -3642,8 +4352,7 @@ def main():
             how="left",
         )
 
-        df_assets_with_forecast_metrics = pd.merge(
-            df_assets_with_forecast_delta,
+        df_assets_with_forecast_metrics = df_assets_with_forecast_delta.merge(
             df_forecast_capacity_inputs_by_malo,
             on="malo",
             how="left",
@@ -3654,7 +4363,6 @@ def main():
             * df_assets_with_forecast_metrics["forecast_available_months"]
             * 730
         )
-
         df_assets_with_forecast_metrics["denominator_1"] = (
             df_assets_with_forecast_metrics["denominator_1"].replace(0, float("nan"))
         )
@@ -3666,59 +4374,53 @@ def main():
             * 100
         ).round(2)
 
+        # Capacity factor debug: compare original vs forecast and save to file
+        try:
+            df_cf_compare = build_capacity_factor_comparison(
+                df_base=df_assets_with_production_metrics,
+                df_forecast=df_assets_with_forecast_metrics,
+            )
+            cf_topn = int(os.getenv("CF_DEBUG_TOPN", "25"))
+            print_capacity_factor_debug(df_cf_compare, top_n=cf_topn, only_drops=True)
+            save_multisheet_excel(
+                sanitize_for_excel(df_cf_compare),
+                str(out_path.parent / "capacity_factor_comparison.xlsx"),
+            )
+        except Exception as e:
+            print(f"⚠️ Could not generate capacity-factor debug report: {e}")
+
         df_report_input = df_assets_with_forecast_metrics
-
         has_forecast = True
-
         print("✅ Forecast results merged")
-
     else:
-
         df_report_input = df_assets_with_production_metrics
-
         has_forecast = False
-
         print("ℹ️ No forecast results to merge")
 
     # =========================================================================
-
     # STEP 10: Generate final reports
-
     # =========================================================================
 
-    print_header("STEP 10: GENERATING REPORTS")
-
+    print_header("STEP 10: GENERATING REPORT")
+    df_report_input = normalize_nan_strings(df_report_input)
     sheet1, sheet2, sheet3 = generate_output_sheets(
         df_report_input, has_production=True, has_forecast=has_forecast
     )
 
-    customer_name = os.path.basename(os.path.dirname(out_path))
+    # customer_name = input_path.stem
+    customer_name = input_path.stem.split("_", 1)[0]
 
+    sh1 = sanitize_sheet_name(f"{customer_name}_1")
+    sh2 = sanitize_sheet_name(f"{customer_name}_2")
+    sh3 = sanitize_sheet_name(f"{customer_name}_3")
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
-        sheet1.to_excel(writer, sheet_name=f"{customer_name}_1", index=False)
-        sheet2.to_excel(writer, sheet_name=f"{customer_name}_2", index=False)
-        sheet3.to_excel(writer, sheet_name=f"{customer_name}_3", index=False)
+        sheet1.to_excel(writer, sheet_name=sh1, index=False, na_rep="")
+        sheet2.to_excel(writer, sheet_name=sh2, index=False, na_rep="")
+        sheet3.to_excel(writer, sheet_name=sh3, index=False, na_rep="")
 
-    format_excel_output(out_path)
-
+    format_excel_output(str(out_path))
     print_header("PIPELINE COMPLETE")
     print(f"✅ Output saved to {out_path}")
-
-    # Print summary of scenarios processed
-
-    print_header("SCENARIOS PROCESSED")
-
-    print(f"✅ SEE data: {'Yes' if df_see_units is not None and not df_see_units.empty else 'No'}")
-    print(f"✅ SEE Enervis: {'Yes' if df_assets_see_enriched is not None else 'No'}")
-    print(
-        f"✅ Non-SEE Enervis: {'Yes' if df_assets_nonsee_enervis_enriched is not None else 'No'}"
-    )
-    print(f"✅ Production data: {'Yes' if has_production else 'No'}")
-    print(
-        f"✅ Curtailment data: {'Yes' if 'curtailment' in available_sheets else 'No'}"
-    )
-    print(f"✅ Redispatch data: {'Yes' if 'redispatch' in available_sheets else 'No'}")
-    print(f"✅ ML Forecasting: {'Yes' if has_forecast else 'No'}")
 
 
 if __name__ == "__main__":

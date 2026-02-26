@@ -7,11 +7,19 @@ import json
 import warnings
 
 from sklearn.metrics import (
-    accuracy_score, precision_score, recall_score, f1_score,
-    roc_auc_score, average_precision_score, confusion_matrix,
-    precision_recall_curve, roc_curve,
-    mean_squared_error, mean_absolute_error,
-    mean_absolute_percentage_error, r2_score
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    roc_auc_score,
+    average_precision_score,
+    confusion_matrix,
+    precision_recall_curve,
+    roc_curve,
+    mean_squared_error,
+    mean_absolute_error,
+    mean_absolute_percentage_error,
+    r2_score,
 )
 
 warnings.filterwarnings("ignore")
@@ -25,38 +33,34 @@ warnings.filterwarnings("ignore")
 def set_paths_for_category(category):
     if category == "PV_rules":
         return {
-            "CLASS_MODEL_PATH": "/data/datalore_ops_dev_bucket/PV_rules/classification_best_model_PV_rules_all_assets.joblib",
-            "CLASS_META_PATH": "/data/datalore_ops_dev_bucket/PV_rules/classification_xgboost_curtailment_model_PV_rules_all_assets.joblib",
-            "CLASS_THRESH_PATH": "/data/datalore_ops_dev_bucket/PV_rules/classification_best_params_PV_rules_all_assets.json",
-            "REG_MODEL_PATH": "/data/datalore_ops_dev_bucket/PV_rules/regression_best_model_PV_rules_all_asssets.joblib",
-            "REG_PARAMS_PATH": "/data/datalore_ops_dev_bucket/PV_rules/regression_best_params_PV_rules_all_asssets.json"
+            "CLASS_MODEL_PATH": "/data/flexpwr_datalore_origination_prod_bucket/curtailment_forecast_upgrid/PV_rules/model result_v2/classification_best_model_PV_rules.joblib",
+            "CLASS_METADATA_PATH": "/data/flexpwr_datalore_origination_prod_bucket/curtailment_forecast_upgrid/PV_rules/model result_v2/classification_metadata_PV_rules.json",
+            "REG_MODEL_PATH": "/data/flexpwr_datalore_origination_prod_bucket/curtailment_forecast_upgrid/PV_rules/model result_v2/regression_best_model_PV_rules.joblib",
+            "REG_METADATA_PATH": "/data/flexpwr_datalore_origination_prod_bucket/curtailment_forecast_upgrid/PV_rules/model result_v2/regression_metadata_PV_rules.json",
         }
 
     elif category == "PV_no_rules":
         return {
-            "CLASS_MODEL_PATH": "/data/datalore_ops_dev_bucket/PV_NORULES/classification_best_model_PV_NORULES.joblib",
-            "CLASS_META_PATH": "/data/datalore_ops_dev_bucket/PV_NORULES/classification_xgboost_curtailment_model_PV_NORULES.joblib",
-            "CLASS_THRESH_PATH": "/data/datalore_ops_dev_bucket/PV_NORULES/classification_best_params_PV_NORULES.json",
-            "REG_MODEL_PATH": "/data/datalore_ops_dev_bucket/PV_NORULES/regression_best_model_PV_NORULES.joblib",
-            "REG_PARAMS_PATH": "/data/datalore_ops_dev_bucket/PV_NORULES/regression_best_params_PV_NORULES.json"
+            "CLASS_MODEL_PATH": "/data/flexpwr_datalore_origination_prod_bucket/curtailment_forecast_upgrid/PV_no_rules/model result_v2/classification_best_model_PV_no_rules.joblib",
+            "CLASS_METADATA_PATH": "/data/flexpwr_datalore_origination_prod_bucket/curtailment_forecast_upgrid/PV_no_rules/model result_v2/classification_metadata_PV_no_rules.json",
+            "REG_MODEL_PATH": "/data/flexpwr_datalore_origination_prod_bucket/curtailment_forecast_upgrid/PV_no_rules/model result_v2/regression_best_model_PV_no_rules.joblib",
+            "REG_METADATA_PATH": "/data/flexpwr_datalore_origination_prod_bucket/curtailment_forecast_upgrid/PV_no_rules/model result_v2/regression_metadata_PV_no_rules.json",
         }
 
     elif category == "WIND_rules":
         return {
-            "CLASS_MODEL_PATH": "/data/datalore_ops_dev_bucket/WIND_rules/classification_best_model_WIND_rules.joblib",
-            "CLASS_META_PATH": "/data/datalore_ops_dev_bucket/WIND_rules/classification_xgboost_curtailment_model_WIND_rules.joblib",
-            "CLASS_THRESH_PATH": "/data/datalore_ops_dev_bucket/WIND_rules/classification_best_params_WIND_rules.json",
-            "REG_MODEL_PATH": "/data/datalore_ops_dev_bucket/WIND_rules/regression_best_model_WIND_rules.joblib",
-            "REG_PARAMS_PATH": "/data/datalore_ops_dev_bucket/WIND_rules/regression_best_params_WIND_rules.json"
+            "CLASS_MODEL_PATH": "/data/flexpwr_datalore_origination_prod_bucket/curtailment_forecast_upgrid/WIND_rules/model result_v2/classification_best_model_WIND_rules.joblib",
+            "CLASS_METADATA_PATH": "/data/flexpwr_datalore_origination_prod_bucket/curtailment_forecast_upgrid/WIND_rules/model result_v2/classification_metadata_WIND_rules.json",
+            "REG_MODEL_PATH": "/data/flexpwr_datalore_origination_prod_bucket/curtailment_forecast_upgrid/WIND_rules/model result_v2/regression_best_model_WIND_rules.joblib",
+            "REG_METADATA_PATH": "/data/flexpwr_datalore_origination_prod_bucket/curtailment_forecast_upgrid/WIND_rules/model result_v2/regression_metadata_WIND_rules.json",
         }
 
     elif category == "WIND_no_rules":
         return {
-            "CLASS_MODEL_PATH": "/data/datalore_ops_dev_bucket/WIND_NORULES/classification_best_model_WIND_NORULES.joblib",
-            "CLASS_META_PATH": "/data/datalore_ops_dev_bucket/WIND_NORULES/classification_xgboost_curtailment_model_WIND_NORULES.joblib",
-            "CLASS_THRESH_PATH": "/data/datalore_ops_dev_bucket/WIND_NORULES/classification_best_params_WIND_NORULES.json",
-            "REG_MODEL_PATH": "/data/datalore_ops_dev_bucket/WIND_NORULES/regression_best_model_WIND_NORULES.joblib",
-            "REG_PARAMS_PATH": "/data/datalore_ops_dev_bucket/WIND_NORULES/regression_best_params_WIND_NORULES.json"
+            "CLASS_MODEL_PATH": "/data/flexpwr_datalore_origination_prod_bucket/curtailment_forecast_upgrid/WIND_no_rules/model result_v2/classification_best_model_WIND_no_rules.joblib",
+            "CLASS_METADATA_PATH": "/data/flexpwr_datalore_origination_prod_bucket/curtailment_forecast_upgrid/WIND_no_rules/model result_v2/classification_metadata_WIND_no_rules.json",
+            "REG_MODEL_PATH": "/data/flexpwr_datalore_origination_prod_bucket/curtailment_forecast_upgrid/WIND_no_rules/model result_v2/regression_best_model_WIND_no_rules.joblib",
+            "REG_METADATA_PATH": "/data/flexpwr_datalore_origination_prod_bucket/curtailment_forecast_upgrid/WIND_no_rules/model result_v2/regression_metadata_WIND_no_rules.json",
         }
 
     else:
@@ -67,15 +71,15 @@ category = "PV_no_rules"
 paths = set_paths_for_category(category)
 
 CLASS_MODEL_PATH = paths["CLASS_MODEL_PATH"]
-CLASS_META_PATH = paths["CLASS_META_PATH"]
-CLASS_THRESH_PATH = paths["CLASS_THRESH_PATH"]
+CLASS_METADATA_PATH = paths["CLASS_METADATA_PATH"]
 REG_MODEL_PATH = paths["REG_MODEL_PATH"]
-REG_PARAMS_PATH = paths["REG_PARAMS_PATH"]
+REG_METADATA_PATH = paths["REG_METADATA_PATH"]
 
 
 # =============================================================================
 # SMALL HELPERS
 # =============================================================================
+
 
 def print_header(title: str):
     print("\n" + "=" * 80)
@@ -87,13 +91,16 @@ def print_header(title: str):
 # CLASSIFICATION IMPLEMENTATION
 # =============================================================================
 
+
 def feature_engineering_classification(df: pd.DataFrame, feature_names):
     """Feature engineering for classification – must match training."""
     df = df.copy()
 
     # volume__mw_imbalance
     if "volume__mw_imbalance" in df.columns:
-        df["volume__mw_imbalance"] = pd.to_numeric(df["volume__mw_imbalance"], errors="coerce").fillna(0)
+        df["volume__mw_imbalance"] = pd.to_numeric(
+            df["volume__mw_imbalance"], errors="coerce"
+        ).fillna(0)
     else:
         df["volume__mw_imbalance"] = 0.0
 
@@ -127,7 +134,9 @@ def feature_engineering_classification(df: pd.DataFrame, feature_names):
     # drop rows with missing in features
     df_clean = df.dropna(subset=available_features).copy()
     if df_clean.empty:
-        raise ValueError("No valid rows after classification cleaning (NaNs in features).")
+        raise ValueError(
+            "No valid rows after classification cleaning (NaNs in features)."
+        )
 
     # ensure numeric
     for f in available_features:
@@ -139,29 +148,27 @@ def feature_engineering_classification(df: pd.DataFrame, feature_names):
 def predict_curtailment_classification(
     df_new_prediction: pd.DataFrame,
     model_path: str = CLASS_MODEL_PATH,
-    metadata_path: str = CLASS_META_PATH,
-    threshold_path: str = CLASS_THRESH_PATH,
+    metadata_path: str = CLASS_METADATA_PATH,
     plot: bool = False,
 ):
     """Run classification model on new data."""
     print_header("CLASSIFICATION – LOADING MODEL & METADATA")
     try:
         best_model = joblib.load(model_path)
-        model_metadata = joblib.load(metadata_path)
-        with open(threshold_path, "r") as f:
-            threshold_info = json.load(f)
+        with open(metadata_path, "r") as f:
+            model_metadata = json.load(f)
     except FileNotFoundError as e:
         print(f"❌ Error loading classification files: {e}")
         return None
 
-    feature_names = threshold_info["feature_names"]
-    average_optimal_threshold = threshold_info["average_optimal_threshold"]
+    feature_names = model_metadata["feature_names"]
+    average_optimal_threshold = model_metadata["average_optimal_threshold"]
 
     print(f"Using optimal threshold: {average_optimal_threshold:.4f}")
 
     print_header("CLASSIFICATION – FEATURE ENGINEERING")
-    df_clean, available_features, has_actual_values = feature_engineering_classification(
-        df_new_prediction, feature_names
+    df_clean, available_features, has_actual_values = (
+        feature_engineering_classification(df_new_prediction, feature_names)
     )
 
     X_new = df_clean[available_features]
@@ -207,7 +214,9 @@ def predict_curtailment_classification(
 
         # Linear scale
         sns.histplot(y_proba, bins=30, kde=True, ax=ax1)
-        ax1.axvline(average_optimal_threshold, color="red", linestyle="--", label="Threshold")
+        ax1.axvline(
+            average_optimal_threshold, color="red", linestyle="--", label="Threshold"
+        )
         ax1.set_title("Linear Scale")
         ax1.set_xlabel("P(curtailment=1)")
         ax1.set_ylabel("Frequency")
@@ -215,8 +224,10 @@ def predict_curtailment_classification(
 
         # Log scale
         sns.histplot(y_proba, bins=30, kde=True, ax=ax2)
-        ax2.axvline(average_optimal_threshold, color="red", linestyle="--", label="Threshold")
-        ax2.set_yscale('log')
+        ax2.axvline(
+            average_optimal_threshold, color="red", linestyle="--", label="Threshold"
+        )
+        ax2.set_yscale("log")
         ax2.set_title("Log Scale")
         ax2.set_xlabel("P(curtailment=1)")
         ax2.set_ylabel("Frequency (log scale)")
@@ -225,7 +236,6 @@ def predict_curtailment_classification(
         plt.suptitle("Predicted Probability Distribution", fontsize=14)
         plt.tight_layout()
         plt.show()
-
 
         # y_actual_1 = df_clean["curtailment_flag"]
         # cm_final = confusion_matrix(y_actual_1, y_pred)
@@ -263,20 +273,18 @@ def predict_curtailment_classification(
         ax = sns.heatmap(
             cm_final,
             annot=annot,
-            fmt='',
-            cmap='Blues',
-            xticklabels=['No Curtailment', 'Curtailment'],
-            yticklabels=['No Curtailment', 'Curtailment'],
+            fmt="",
+            cmap="Blues",
+            xticklabels=["No Curtailment", "Curtailment"],
+            yticklabels=["No Curtailment", "Curtailment"],
         )
 
         # Add total count
-        plt.title('Confusion Matrix – testing new data')
-        plt.xlabel('Predicted')
-        plt.ylabel('Actual')
+        plt.title("Confusion Matrix – testing new data")
+        plt.xlabel("Predicted")
+        plt.ylabel("Actual")
         plt.tight_layout()
         plt.show()
-
-
 
     results = {
         "predictions": df_clean,
@@ -307,6 +315,7 @@ def predict_curtailment_classification(
 # REGRESSION IMPLEMENTATION
 # =============================================================================
 
+
 def feature_engineering_regression(df: pd.DataFrame, reg_features):
     """Feature engineering for regression – must match training."""
     df = df.copy()
@@ -318,7 +327,8 @@ def feature_engineering_regression(df: pd.DataFrame, reg_features):
         "dayaheadprice_eur_mwh",
         "rebap_euro_per_mwh",
         "volume__mw_imbalance",
-        "id500_eur_mwh"
+        "id500_eur_mwh",
+        "rmv_eur_per_mwh",
     ]
 
     for col in exo_features:
@@ -383,6 +393,7 @@ def feature_engineering_regression(df: pd.DataFrame, reg_features):
 #     plt.tight_layout()
 #     plt.show()
 
+
 def plot_regression_predictions(df_clean):
     """
     Simple regression prediction distribution + time plot,
@@ -399,7 +410,9 @@ def plot_regression_predictions(df_clean):
     has_actual = "curtailment_kWh_per_kw" in df_clean.columns
     y_actual = df_clean["curtailment_kWh_per_kw"].values if has_actual else None
 
-    y_actual_plot = df_clean[df_clean["curtailment_kWh_per_kw"] > 0]["curtailment_kWh_per_kw"].values
+    y_actual_plot = df_clean[df_clean["curtailment_kWh_per_kw"] > 0][
+        "curtailment_kWh_per_kw"
+    ].values
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
@@ -497,31 +510,23 @@ def plot_regression_predictions(df_clean):
 def predict_curtailment_regression(
     df_reg_input: pd.DataFrame,
     model_path: str = REG_MODEL_PATH,
-    params_path: str = REG_PARAMS_PATH,
+    metadata_path: str = REG_METADATA_PATH,
     plot: bool = False,
 ):
     """
     Run regression model on subset of rows (already filtered by classification).
     """
-    print_header("REGRESSION – LOADING MODEL & PARAMS")
+    print_header("REGRESSION – LOADING MODEL & METADATA")
     try:
         best_model = joblib.load(model_path)
-        with open(params_path, "r") as f:
-            best_params = json.load(f)
-        _ = best_params  # not used but loaded for completeness
+        with open(metadata_path, "r") as f:
+            reg_metadata = json.load(f)
     except FileNotFoundError as e:
         print(f"❌ Error loading regression files: {e}")
         return None
 
-    # regression features (must match training)
-    reg_features = [
-        "quarterly_energy_kWh_per_kw",
-        "enwex_percentage",
-        "dayaheadprice_eur_mwh",
-        "rebap_euro_per_mwh",
-        "volume__mw_imbalance",
-        "id500_eur_mwh",
-    ]
+    # regression features read from metadata (matches training exactly)
+    reg_features = reg_metadata["feature_names"]
 
     if df_reg_input.empty:
         print("ℹ️ No rows passed to regression (no predicted curtailment = 1).")
@@ -530,11 +535,19 @@ def predict_curtailment_regression(
             "model": best_model,
             "features_used": reg_features,
             "prediction_metrics": {"mse": None, "mae": None, "mape": None, "r2": None},
-            "prediction_stats": {"mean": None, "std": None, "min": None, "max": None, "count": 0},
+            "prediction_stats": {
+                "mean": None,
+                "std": None,
+                "min": None,
+                "max": None,
+                "count": 0,
+            },
         }
 
     print_header("REGRESSION – FEATURE ENGINEERING ON FILTERED ROWS")
-    df_clean, X_new, used_features = feature_engineering_regression(df_reg_input, reg_features)
+    df_clean, X_new, used_features = feature_engineering_regression(
+        df_reg_input, reg_features
+    )
 
     print(f"Regression rows: {len(X_new)}, features used: {used_features}")
 
@@ -561,7 +574,7 @@ def predict_curtailment_regression(
         print("ℹ️ No actual curtailment available for regression metrics.")
 
     if plot:
-        #plot_regression_predictions(df_clean, y_pred)
+        # plot_regression_predictions(df_clean, y_pred)
         plot_regression_predictions(df_clean)
 
     results = {
@@ -589,13 +602,13 @@ def predict_curtailment_regression(
 # FULL PIPELINE: CLASSIFICATION -> REGRESSION (FILTERED)
 # =============================================================================
 
+
 def run_curtailment_forecast(
     df_new_prediction: pd.DataFrame,
     cls_model_path: str = CLASS_MODEL_PATH,
-    cls_meta_path: str = CLASS_META_PATH,
-    cls_thresh_path: str = CLASS_THRESH_PATH,
+    cls_metadata_path: str = CLASS_METADATA_PATH,
     reg_model_path: str = REG_MODEL_PATH,
-    reg_params_path: str = REG_PARAMS_PATH,
+    reg_metadata_path: str = REG_METADATA_PATH,
     plot_class: bool = False,
     plot_reg: bool = False,
 ):
@@ -610,8 +623,7 @@ def run_curtailment_forecast(
     cls_results = predict_curtailment_classification(
         df_new_prediction,
         model_path=cls_model_path,
-        metadata_path=cls_meta_path,
-        threshold_path=cls_thresh_path,
+        metadata_path=cls_metadata_path,
         plot=plot_class,
     )
     if cls_results is None:
@@ -632,7 +644,7 @@ def run_curtailment_forecast(
     reg_results = predict_curtailment_regression(
         df_for_reg,
         model_path=reg_model_path,
-        params_path=reg_params_path,
+        metadata_path=reg_metadata_path,
         plot=plot_reg,
     )
 
@@ -648,9 +660,7 @@ def run_curtailment_forecast(
         merge_keys = ["malo", "delivery_start_berlin"]
 
         # Only keep keys + prediction column
-        df_reg_pred = df_reg_pred[
-            merge_keys + ["predicted_curtailment_kWh_per_kw"]
-        ]
+        df_reg_pred = df_reg_pred[merge_keys + ["predicted_curtailment_kWh_per_kw"]]
 
         # SAFE two-key merge
         df_combined = df_combined.merge(
@@ -661,12 +671,15 @@ def run_curtailment_forecast(
         )
 
         # Overwrite correct column
-        df_combined["predicted_curtailment_kWh_per_kw"] = \
-            df_combined["predicted_curtailment_kWh_per_kw_reg"]
+        df_combined["predicted_curtailment_kWh_per_kw"] = df_combined[
+            "predicted_curtailment_kWh_per_kw_reg"
+        ]
 
         df_combined.drop(columns=["predicted_curtailment_kWh_per_kw_reg"], inplace=True)
 
-        df_combined["predicted_curtailment_kWh_per_kw"] = pd.to_numeric(df_combined["predicted_curtailment_kWh_per_kw"], errors='coerce').fillna(0)
+        df_combined["predicted_curtailment_kWh_per_kw"] = pd.to_numeric(
+            df_combined["predicted_curtailment_kWh_per_kw"], errors="coerce"
+        ).fillna(0)
 
     return {
         "classification": cls_results,
@@ -686,10 +699,11 @@ def run_curtailment_forecast(
 # PV_rules
 
 
-
 if __name__ == "__main__":
-    #df_new = pd.read_parquet("/data/datalore_ops_dev_bucket/TESTING_forecast_data_WIND_norules_fit0.parquet")
-    df_new = pd.read_parquet("/data/datalore_ops_dev_bucket/PV_NORULES/TESTING_forecast_data_PV_norules_7c_norules.parquet")
+    # df_new = pd.read_parquet("/data/datalore_ops_dev_bucket/TESTING_forecast_data_WIND_norules_fit0.parquet")
+    df_new = pd.read_parquet(
+        "/data/datalore_ops_dev_bucket/PV_NORULES/TESTING_forecast_data_PV_norules_7c_norules.parquet"
+    )
 
     print(category)
     print("🦐🦐🦐🦐")
@@ -698,10 +712,9 @@ if __name__ == "__main__":
     results = run_curtailment_forecast(
         df_new_prediction=df_new,
         cls_model_path=CLASS_MODEL_PATH,
-        cls_meta_path=CLASS_META_PATH,
-        cls_thresh_path=CLASS_THRESH_PATH,
+        cls_metadata_path=CLASS_METADATA_PATH,
         reg_model_path=REG_MODEL_PATH,
-        reg_params_path=REG_PARAMS_PATH,
+        reg_metadata_path=REG_METADATA_PATH,
         plot_class=True,
         plot_reg=True,
     )
@@ -712,7 +725,8 @@ if __name__ == "__main__":
         print(f"Rows in output: {len(df_out)}")
 
         cols_show = [
-            c for c in [
+            c
+            for c in [
                 "malo",
                 "delivery_start_berlin",
                 "predicted_curtailment_probability",
@@ -723,7 +737,6 @@ if __name__ == "__main__":
         ]
         print(df_out[cols_show].head(15).round(4))
 
-
         # excel_file_path = "/data/datalore_ops_dev_bucket/WIND_NORULES/TESTING_result.xlsx"
         # rows_per_sheet = 1000000
 
@@ -733,4 +746,3 @@ if __name__ == "__main__":
         #         sheet_name = f'Pred_result_{i//rows_per_sheet + 1}'
         #         chunk.to_excel(writer, sheet_name=sheet_name, index=False)
         # print("🦐🦐🦐🦐")
-
